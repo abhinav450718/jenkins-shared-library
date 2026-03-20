@@ -1,8 +1,10 @@
 def call(Map config = [:]) {
 
     def appPath = config.path ?: '.'
+    def binaryName = config.binary ?: 'app-binary'
+    def testReport = config.testReport ?: 'test-report.json'
 
-    echo "Starting Golang CI (Build + Test)"
+    echo "Starting Golang CI (Build + Test with Artifacts)"
 
     sh """
     set -e
@@ -16,12 +18,17 @@ def call(Map config = [:]) {
     go mod tidy
     go mod download
 
-    echo "Running unit tests (non-blocking)..."
-    go test ./... -v || echo "Some tests failed due to environment dependencies, continuing..."
+    echo "Running unit tests (capturing report)..."
+    go test ./... -v -json > ${testReport} || echo "Some tests failed, continuing..."
 
-    echo "Running build..."
-    go build ./...
+    echo "Building application binary..."
+    go build -o ${binaryName} .
 
-    echo "Golang CI completed successfully"
+    echo "Artifacts generated:"
+    ls -lh ${binaryName} ${testReport}
     """
+
+    echo "Archiving artifacts..."
+
+    archiveArtifacts artifacts: "${binaryName}, ${testReport}", fingerprint: true
 }
