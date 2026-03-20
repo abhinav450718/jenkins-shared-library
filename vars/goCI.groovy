@@ -4,27 +4,58 @@ def call(Map config = [:]) {
     def binaryName = config.binary ?: 'app-binary'
     def testReport = config.testReport ?: 'test-report.json'
 
-    echo "Starting Golang CI (Build + Test with Artifacts)"
+    echo "Starting Golang CI (Detailed Insights)"
 
     sh """
     set -e
 
-    echo "Checking Go installation..."
+    echo "=============================="
+    echo "Go Environment"
+    echo "=============================="
     go version
 
     cd ${appPath}
 
-    echo "Preparing Go modules..."
+    echo "=============================="
+    echo "Preparing Dependencies"
+    echo "=============================="
     go mod tidy
     go mod download
 
-    echo "Running unit tests (capturing report)..."
-    go test ./... -v -json > ${testReport} || echo "Some tests failed, continuing..."
+    echo "=============================="
+    echo "Running Unit Tests"
+    echo "=============================="
 
-    echo "Building application binary..."
+    # Run tests (console + save JSON)
+    go test ./... -v -json | tee ${testReport} || echo "Tests completed with some failures"
+
+    echo "=============================="
+    echo "Test Summary"
+    echo "=============================="
+
+    # Count PASS / FAIL
+    PASS_COUNT=\$(grep -c '"Action":"pass"' ${testReport} || true)
+    FAIL_COUNT=\$(grep -c '"Action":"fail"' ${testReport} || true)
+
+    echo "Passed Tests: \$PASS_COUNT"
+    echo "Failed Tests: \$FAIL_COUNT"
+
+    echo "=============================="
+    echo "Building Application"
+    echo "=============================="
+
     go build -o ${binaryName} .
 
-    echo "Artifacts generated:"
+    echo "Build Successful"
+
+    echo "=============================="
+    echo "Binary Details"
+    echo "=============================="
+    ls -lh ${binaryName}
+
+    echo "=============================="
+    echo "Artifacts Generated"
+    echo "=============================="
     ls -lh ${binaryName} ${testReport}
     """
 
