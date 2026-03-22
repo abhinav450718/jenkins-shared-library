@@ -10,6 +10,18 @@ def call(Map config = [:]) {
     set -e
 
     echo "=============================="
+    echo "Installing Go (Local)"
+    echo "=============================="
+
+    GO_VERSION="1.21.6"
+
+    curl -LO https://go.dev/dl/go\${GO_VERSION}.linux-amd64.tar.gz
+    tar -xzf go\${GO_VERSION}.linux-amd64.tar.gz
+    mv go go-install
+
+    export PATH=\$PWD/go-install/bin:\$PATH
+
+    echo "=============================="
     echo "Go Environment"
     echo "=============================="
     go version
@@ -33,7 +45,6 @@ def call(Map config = [:]) {
     echo "Test Summary"
     echo "=============================="
 
-    # Count PASS / FAIL
     PASS_COUNT=\$(grep -c '"Action":"pass"' ${testReport} || true)
     FAIL_COUNT=\$(grep -c '"Action":"fail"' ${testReport} || true)
 
