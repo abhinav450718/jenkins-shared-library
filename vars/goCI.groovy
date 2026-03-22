@@ -1,31 +1,39 @@
 def call(Map config = [:]) {
 
-    def appPath = config.path ?: '.'
+    def appPath    = config.path ?: '.'
     def binaryName = config.binary ?: 'app-binary'
     def testReport = config.testReport ?: 'test-report.json'
 
-    echo "Starting Golang CI (Detailed Insights)"
+    echo "Starting Golang CI (Production Ready)"
 
     sh """
     set -e
 
     echo "=============================="
-    echo "Installing Go (Local)"
+    echo "Installing Go (Isolated)"
     echo "=============================="
 
     GO_VERSION="1.21.6"
 
+    # Download Go
     curl -LO https://go.dev/dl/go\${GO_VERSION}.linux-amd64.tar.gz
-    tar -xzf go\${GO_VERSION}.linux-amd64.tar.gz
-    mv go go-install
 
-    export PATH=\$PWD/go-install/bin:\$PATH
+    # Install OUTSIDE workspace (important fix)
+    mkdir -p /tmp/go-install
+    tar -xzf go\${GO_VERSION}.linux-amd64.tar.gz -C /tmp/
+    mv /tmp/go /tmp/go-install
+
+    # Set PATH
+    export PATH=/tmp/go-install/bin:\$PATH
 
     echo "=============================="
     echo "Go Environment"
     echo "=============================="
     go version
 
+    echo "=============================="
+    echo "Switching to App Directory"
+    echo "=============================="
     cd ${appPath}
 
     echo "=============================="
@@ -38,8 +46,8 @@ def call(Map config = [:]) {
     echo "Running Unit Tests"
     echo "=============================="
 
-    # Run tests (console + save JSON)
-    go test ./... -v -json | tee ${testReport} || echo "Tests completed with some failures"
+    # Run only project packages (IMPORTANT FIX)
+    go test \$(go list ./...) -v -json | tee ${testReport}
 
     echo "=============================="
     echo "Test Summary"
