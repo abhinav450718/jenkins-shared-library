@@ -19,7 +19,7 @@ def call(Map config) {
             }
 
             // -------------------------
-            // Install Go Locally (No sudo)
+            // Setup Go Locally
             // -------------------------
             stage('Setup Go (Local)') {
                 sh '''
@@ -28,11 +28,7 @@ def call(Map config) {
                 GO_VERSION=1.22.5
 
                 curl -LO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
-
                 tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
-
-                echo "Go installed at:"
-                ls -l go/bin
 
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
@@ -43,29 +39,33 @@ def call(Map config) {
             }
 
             // -------------------------
-            // Code Compilation
+            // Code Compilation (FIXED)
             // -------------------------
             stage('Code Compilation') {
                 sh '''
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
 
-                echo "Running go build..."
+                echo "Running go build (filtered)..."
+
                 go mod tidy
-                go build ./...
+
+                # Build only valid packages (exclude broken test dirs)
+                go list ./... | grep -v "/go/test" | xargs go build
                 '''
             }
 
             // -------------------------
-            // Unit Testing
+            // Unit Testing (FIXED)
             // -------------------------
             stage('Unit Testing') {
                 sh '''
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
 
-                echo "Running go test..."
-                go test ./... -v
+                echo "Running go test (filtered)..."
+
+                go list ./... | grep -v "/go/test" | xargs go test -v
                 '''
             }
 
