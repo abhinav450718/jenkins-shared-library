@@ -2,11 +2,11 @@ def call(Map config) {
 
     node {
 
-        def repoUrl           = config.repoUrl
-        def branch            = config.branch ?: 'main'
-        def sonarProjectKey   = config.sonarProjectKey
-        def sonarProjectName  = config.sonarProjectName
-        def slackChannel      = config.slackChannel ?: '#ci-operation-notifications'
+        def repoUrl          = config.repoUrl
+        def branch           = config.branch ?: 'main'
+        def sonarProjectKey  = config.sonarProjectKey ?: 'employee-api'
+        def sonarProjectName = config.sonarProjectName ?: 'employee-api'
+        def slackChannel     = config.slackChannel ?: '#ci-operation-notifications'
 
         try {
 
@@ -18,8 +18,25 @@ def call(Map config) {
                 git branch: branch, url: repoUrl
             }
 
-            stage('Verify Go Environment') {
+            // -------------------------
+            // Install Go Locally (No sudo)
+            // -------------------------
+            stage('Setup Go (Local)') {
                 sh '''
+                echo "Installing Go locally..."
+
+                GO_VERSION=1.22.5
+
+                curl -LO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+
+                tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
+
+                echo "Go installed at:"
+                ls -l go/bin
+
+                export GOROOT=$(pwd)/go
+                export PATH=$GOROOT/bin:$PATH
+
                 echo "Go Version:"
                 go version
                 '''
@@ -30,7 +47,10 @@ def call(Map config) {
             // -------------------------
             stage('Code Compilation') {
                 sh '''
-                echo "Compiling Go code..."
+                export GOROOT=$(pwd)/go
+                export PATH=$GOROOT/bin:$PATH
+
+                echo "Running go build..."
                 go mod tidy
                 go build ./...
                 '''
@@ -41,17 +61,23 @@ def call(Map config) {
             // -------------------------
             stage('Unit Testing') {
                 sh '''
-                echo "Running unit tests..."
+                export GOROOT=$(pwd)/go
+                export PATH=$GOROOT/bin:$PATH
+
+                echo "Running go test..."
                 go test ./... -v
                 '''
             }
 
             // -------------------------
-            // Static Code Analysis
+            // SonarQube Analysis
             // -------------------------
             stage('SonarQube Analysis') {
                 withSonarQubeEnv('SonarQube') {
                     sh """
+                    export GOROOT=\$(pwd)/go
+                    export PATH=\$GOROOT/bin:\$PATH
+
                     sonar-scanner \
                     -Dsonar.projectKey=${sonarProjectKey} \
                     -Dsonar.projectName=${sonarProjectName} \
@@ -71,6 +97,8 @@ def call(Map config) {
                         if (qg.status != 'OK') {
                             currentBuild.result = 'UNSTABLE'
                             echo "Quality Gate Failed: ${qg.status}"
+                        } else {
+                            echo "Quality Gate Passed"
                         }
                     }
                 }
@@ -81,6 +109,7 @@ def call(Map config) {
         } catch (err) {
 
             currentBuild.result = 'FAILURE'
+            echo "Error: ${err}"
             throw err
 
         } finally {
@@ -88,6 +117,8 @@ def call(Map config) {
             stage('Post Actions') {
 
                 if (currentBuild.result == 'SUCCESS') {
+
+                    echo "SUCCESS: Go CI completed"
 
                     slackSend(
                         channel: slackChannel,
@@ -97,6 +128,8 @@ def call(Map config) {
 
                 } else if (currentBuild.result == 'UNSTABLE') {
 
+                    echo "UNSTABLE: Quality Gate Failed"
+
                     slackSend(
                         channel: slackChannel,
                         color: 'warning',
@@ -104,6 +137,8 @@ def call(Map config) {
                     )
 
                 } else {
+
+                    echo "FAILED: Go CI failed"
 
                     slackSend(
                         channel: slackChannel,
