@@ -100,7 +100,7 @@ def call(Map config) {
             // Quality Gate
             // -------------------------
             stage('Quality Gate') {
-                timeout(time: 3, unit: 'MINUTES') {
+                timeout(time: 10, unit: 'MINUTES') {
                     script {
                         def qg = waitForQualityGate()
 
