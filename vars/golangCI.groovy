@@ -13,7 +13,7 @@ def call(Map config) {
         try {
 
             stage('Clean Workspace') {
-                deleteDir()
+                cleanWs()
             }
 
             stage('Checkout Code') {
@@ -21,14 +21,16 @@ def call(Map config) {
             }
 
             // -------------------------
-            // Setup Go
+            // Setup Go (LOCAL)
             // -------------------------
             stage('Setup Go') {
                 sh '''
                 GO_VERSION=1.22.5
 
-                curl -sLO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
-                tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                if [ ! -d "go" ]; then
+                    curl -sLO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                    tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                fi
 
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
@@ -38,68 +40,58 @@ def call(Map config) {
             }
 
             // -------------------------
-            // Setup SonarScanner (LOCAL FIX)
-            // -------------------------
-            stage('Setup SonarScanner') {
-                sh '''
-                echo "Installing SonarScanner locally..."
-
-                curl -sLo sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
-                unzip -q sonar.zip
-
-                export PATH=$(pwd)/sonar-scanner-*/bin:$PATH
-
-                sonar-scanner --version
-                '''
-            }
-
-            // -------------------------
-            // Create Report Directory
+            // Prepare Reports
             // -------------------------
             stage('Prepare Reports') {
                 sh "mkdir -p ${REPORT_DIR}"
             }
 
             // -------------------------
-            // Code Compilation
+            // Build
             // -------------------------
             stage('Build') {
                 sh """
                 export GOROOT=\$(pwd)/go
                 export PATH=\$GOROOT/bin:\$PATH
 
+                echo "Building Go project..."
+
                 go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go build 2>&1 | tee ${REPORT_DIR}/build.log
                 """
             }
 
             // -------------------------
-            // Unit Testing
+            // Unit Test
             // -------------------------
             stage('Test') {
                 sh """
                 export GOROOT=\$(pwd)/go
                 export PATH=\$GOROOT/bin:\$PATH
 
+                echo "Running tests..."
+
                 go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go test -v 2>&1 | tee ${REPORT_DIR}/test.log
                 """
             }
 
             // -------------------------
-            // SonarQube Analysis
+            // SonarQube (NO LOCAL INSTALL)
             // -------------------------
             stage('SonarQube Analysis') {
                 withSonarQubeEnv('SonarQube') {
                     sh """
                     export GOROOT=\$(pwd)/go
-                    export PATH=\$GOROOT/bin:\$(pwd)/sonar-scanner-*/bin:\$PATH
+                    export PATH=\$GOROOT/bin:\$PATH
 
-                    sonar-scanner \
+                    echo "Running SonarQube analysis..."
+
+                    npx sonar-scanner \
                     -Dsonar.projectKey=${sonarProjectKey} \
                     -Dsonar.projectName=${sonarProjectName} \
                     -Dsonar.sources=. \
-                    -Dsonar.language=go \
+                    -Dsonar.exclusions=**/go/test/** \
                     -Dsonar.projectBaseDir=. \
-                    -Dsonar.log.level=INFO | tee ${REPORT_DIR}/sonar.log
+                    | tee ${REPORT_DIR}/sonar.log
                     """
                 }
             }
@@ -111,17 +103,22 @@ def call(Map config) {
                 timeout(time: 3, unit: 'MINUTES') {
                     script {
                         def qg = waitForQualityGate()
-                        writeFile file: "${REPORT_DIR}/quality-gate.txt", text: "Status: ${qg.status}"
+
+                        writeFile file: "${REPORT_DIR}/quality-gate.txt",
+                                  text: "Status: ${qg.status}"
 
                         if (qg.status != 'OK') {
                             currentBuild.result = 'UNSTABLE'
+                            echo "Quality Gate failed: ${qg.status}"
+                        } else {
+                            echo "Quality Gate Passed"
                         }
                     }
                 }
             }
 
             // -------------------------
-            // Archive ALL Reports
+            // Archive Reports
             // -------------------------
             stage('Archive Reports') {
                 archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
@@ -144,7 +141,7 @@ def call(Map config) {
                     slackSend(
                         channel: slackChannel,
                         color: 'good',
-                        message: "SUCCESS - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}"
+                        message: "SUCCESS - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
                     )
 
                 } else if (currentBuild.result == 'UNSTABLE') {
@@ -152,7 +149,7 @@ def call(Map config) {
                     slackSend(
                         channel: slackChannel,
                         color: 'warning',
-                        message: "UNSTABLE - Quality Gate Failed\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}"
+                        message: "UNSTABLE - Quality Gate Failed\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
                     )
 
                 } else {
@@ -160,7 +157,7 @@ def call(Map config) {
                     slackSend(
                         channel: slackChannel,
                         color: 'danger',
-                        message: "FAILED - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}"
+                        message: "FAILED - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
                     )
                 }
 
