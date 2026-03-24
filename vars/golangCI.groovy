@@ -8,6 +8,8 @@ def call(Map config) {
         def sonarProjectName = config.sonarProjectName ?: 'employee-api'
         def slackChannel     = config.slackChannel ?: '#ci-operation-notifications'
 
+        def REPORT_DIR = "reports"
+
         try {
 
             stage('Clean Workspace') {
@@ -19,52 +21,67 @@ def call(Map config) {
             }
 
             // -------------------------
-            // Setup Go Locally
+            // Setup Go
             // -------------------------
-            stage('Setup Go (Local)') {
+            stage('Setup Go') {
                 sh '''
-                echo "Installing Go locally..."
-
                 GO_VERSION=1.22.5
 
-                curl -LO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
+                curl -sLO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                 tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
 
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
 
-                echo "Go Version:"
                 go version
                 '''
             }
 
             // -------------------------
-            // Code Compilation (FIXED)
+            // Setup SonarScanner (LOCAL FIX)
             // -------------------------
-            stage('Code Compilation') {
+            stage('Setup SonarScanner') {
                 sh '''
-                export GOROOT=$(pwd)/go
-                export PATH=$GOROOT/bin:$PATH
+                echo "Installing SonarScanner locally..."
 
-                echo "Building only valid Go packages..."
+                curl -sLo sonar.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+                unzip -q sonar.zip
 
-                # ONLY build valid modules (exclude go/test completely)
-                go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go build
+                export PATH=$(pwd)/sonar-scanner-*/bin:$PATH
+
+                sonar-scanner --version
                 '''
             }
 
             // -------------------------
-            // Unit Testing (FIXED)
+            // Create Report Directory
             // -------------------------
-            stage('Unit Testing') {
-                sh '''
-                export GOROOT=$(pwd)/go
-                export PATH=$GOROOT/bin:$PATH
+            stage('Prepare Reports') {
+                sh "mkdir -p ${REPORT_DIR}"
+            }
 
-                echo "Running tests on valid packages..."
+            // -------------------------
+            // Code Compilation
+            // -------------------------
+            stage('Build') {
+                sh """
+                export GOROOT=\$(pwd)/go
+                export PATH=\$GOROOT/bin:\$PATH
 
-                go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go test -v
-                '''
+                go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go build 2>&1 | tee ${REPORT_DIR}/build.log
+                """
+            }
+
+            // -------------------------
+            // Unit Testing
+            // -------------------------
+            stage('Test') {
+                sh """
+                export GOROOT=\$(pwd)/go
+                export PATH=\$GOROOT/bin:\$PATH
+
+                go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go test -v 2>&1 | tee ${REPORT_DIR}/test.log
+                """
             }
 
             // -------------------------
@@ -74,13 +91,15 @@ def call(Map config) {
                 withSonarQubeEnv('SonarQube') {
                     sh """
                     export GOROOT=\$(pwd)/go
-                    export PATH=\$GOROOT/bin:\$PATH
+                    export PATH=\$GOROOT/bin:\$(pwd)/sonar-scanner-*/bin:\$PATH
 
                     sonar-scanner \
                     -Dsonar.projectKey=${sonarProjectKey} \
                     -Dsonar.projectName=${sonarProjectName} \
                     -Dsonar.sources=. \
-                    -Dsonar.language=go
+                    -Dsonar.language=go \
+                    -Dsonar.projectBaseDir=. \
+                    -Dsonar.log.level=INFO | tee ${REPORT_DIR}/sonar.log
                     """
                 }
             }
@@ -92,14 +111,20 @@ def call(Map config) {
                 timeout(time: 3, unit: 'MINUTES') {
                     script {
                         def qg = waitForQualityGate()
+                        writeFile file: "${REPORT_DIR}/quality-gate.txt", text: "Status: ${qg.status}"
+
                         if (qg.status != 'OK') {
                             currentBuild.result = 'UNSTABLE'
-                            echo "Quality Gate Failed: ${qg.status}"
-                        } else {
-                            echo "Quality Gate Passed"
                         }
                     }
                 }
+            }
+
+            // -------------------------
+            // Archive ALL Reports
+            // -------------------------
+            stage('Archive Reports') {
+                archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
             }
 
             currentBuild.result = 'SUCCESS'
@@ -119,7 +144,7 @@ def call(Map config) {
                     slackSend(
                         channel: slackChannel,
                         color: 'good',
-                        message: "SUCCESS - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
+                        message: "SUCCESS - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}"
                     )
 
                 } else if (currentBuild.result == 'UNSTABLE') {
@@ -127,7 +152,7 @@ def call(Map config) {
                     slackSend(
                         channel: slackChannel,
                         color: 'warning',
-                        message: "UNSTABLE - Quality Gate Failed\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
+                        message: "UNSTABLE - Quality Gate Failed\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}"
                     )
 
                 } else {
@@ -135,7 +160,7 @@ def call(Map config) {
                     slackSend(
                         channel: slackChannel,
                         color: 'danger',
-                        message: "FAILED - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
+                        message: "FAILED - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}"
                     )
                 }
 
