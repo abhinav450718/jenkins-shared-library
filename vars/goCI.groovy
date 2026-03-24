@@ -1,84 +1,119 @@
-def call(Map config = [:]) {
+def call(Map config) {
 
-    def appPath    = config.path ?: '.'
-    def binaryName = config.binary ?: 'app-binary'
-    def testReport = config.testReport ?: 'test-report.json'
+    node {
 
-    echo "Starting Golang CI (Production Ready)"
+        def repoUrl           = config.repoUrl
+        def branch            = config.branch ?: 'main'
+        def sonarProjectKey   = config.sonarProjectKey
+        def sonarProjectName  = config.sonarProjectName
+        def slackChannel      = config.slackChannel ?: '#ci-operation-notifications'
 
-    sh """
-    set -e
+        try {
 
-    echo "=============================="
-    echo "Installing Go (Isolated)"
-    echo "=============================="
+            stage('Clean Workspace') {
+                deleteDir()
+            }
 
-    GO_VERSION="1.21.6"
+            stage('Checkout Code') {
+                git branch: branch, url: repoUrl
+            }
 
-    # Download Go
-    curl -LO https://go.dev/dl/go\${GO_VERSION}.linux-amd64.tar.gz
+            stage('Verify Go Environment') {
+                sh '''
+                echo "Go Version:"
+                go version
+                '''
+            }
 
-    # Install OUTSIDE workspace (important fix)
-    mkdir -p /tmp/go-install
-    tar -xzf go\${GO_VERSION}.linux-amd64.tar.gz -C /tmp/
-    mv /tmp/go /tmp/go-install
+            // -------------------------
+            // Code Compilation
+            // -------------------------
+            stage('Code Compilation') {
+                sh '''
+                echo "Compiling Go code..."
+                go mod tidy
+                go build ./...
+                '''
+            }
 
-    # Set PATH
-    export PATH=/tmp/go-install/bin:\$PATH
+            // -------------------------
+            // Unit Testing
+            // -------------------------
+            stage('Unit Testing') {
+                sh '''
+                echo "Running unit tests..."
+                go test ./... -v
+                '''
+            }
 
-    echo "=============================="
-    echo "Go Environment"
-    echo "=============================="
-    go version
+            // -------------------------
+            // Static Code Analysis
+            // -------------------------
+            stage('SonarQube Analysis') {
+                withSonarQubeEnv('SonarQube') {
+                    sh """
+                    sonar-scanner \
+                    -Dsonar.projectKey=${sonarProjectKey} \
+                    -Dsonar.projectName=${sonarProjectName} \
+                    -Dsonar.sources=. \
+                    -Dsonar.language=go
+                    """
+                }
+            }
 
-    echo "=============================="
-    echo "Switching to App Directory"
-    echo "=============================="
-    cd ${appPath}
+            // -------------------------
+            // Quality Gate
+            // -------------------------
+            stage('Quality Gate') {
+                timeout(time: 3, unit: 'MINUTES') {
+                    script {
+                        def qg = waitForQualityGate()
+                        if (qg.status != 'OK') {
+                            currentBuild.result = 'UNSTABLE'
+                            echo "Quality Gate Failed: ${qg.status}"
+                        }
+                    }
+                }
+            }
 
-    echo "=============================="
-    echo "Preparing Dependencies"
-    echo "=============================="
-    go mod tidy
-    go mod download
+            currentBuild.result = 'SUCCESS'
 
-    echo "=============================="
-    echo "Running Unit Tests"
-    echo "=============================="
+        } catch (err) {
 
-    # Run only project packages (IMPORTANT FIX)
-    go test \$(go list ./...) -v -json | tee ${testReport}
+            currentBuild.result = 'FAILURE'
+            throw err
 
-    echo "=============================="
-    echo "Test Summary"
-    echo "=============================="
+        } finally {
 
-    PASS_COUNT=\$(grep -c '"Action":"pass"' ${testReport} || true)
-    FAIL_COUNT=\$(grep -c '"Action":"fail"' ${testReport} || true)
+            stage('Post Actions') {
 
-    echo "Passed Tests: \$PASS_COUNT"
-    echo "Failed Tests: \$FAIL_COUNT"
+                if (currentBuild.result == 'SUCCESS') {
 
-    echo "=============================="
-    echo "Building Application"
-    echo "=============================="
+                    slackSend(
+                        channel: slackChannel,
+                        color: 'good',
+                        message: "SUCCESS - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
+                    )
 
-    go build -o ${binaryName} .
+                } else if (currentBuild.result == 'UNSTABLE') {
 
-    echo "Build Successful"
+                    slackSend(
+                        channel: slackChannel,
+                        color: 'warning',
+                        message: "UNSTABLE - Quality Gate Failed\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
+                    )
 
-    echo "=============================="
-    echo "Binary Details"
-    echo "=============================="
-    ls -lh ${binaryName}
+                } else {
 
-    echo "=============================="
-    echo "Artifacts Generated"
-    echo "=============================="
-    ls -lh ${binaryName} ${testReport}
-    """
+                    slackSend(
+                        channel: slackChannel,
+                        color: 'danger',
+                        message: "FAILED - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
+                    )
+                }
 
-    echo "Archiving artifacts..."
-
-    archiveArtifacts artifacts: "${binaryName}, ${testReport}", fingerprint: true
+                cleanWs()
+            }
+        }
+    }
 }
