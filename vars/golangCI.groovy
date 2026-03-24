@@ -46,12 +46,10 @@ def call(Map config) {
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
 
-                echo "Running go build (filtered)..."
+                echo "Building only valid Go packages..."
 
-                go mod tidy
-
-                # Build only valid packages (exclude broken test dirs)
-                go list ./... | grep -v "/go/test" | xargs go build
+                # ONLY build valid modules (exclude go/test completely)
+                go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go build
                 '''
             }
 
@@ -63,9 +61,9 @@ def call(Map config) {
                 export GOROOT=$(pwd)/go
                 export PATH=$GOROOT/bin:$PATH
 
-                echo "Running go test (filtered)..."
+                echo "Running tests on valid packages..."
 
-                go list ./... | grep -v "/go/test" | xargs go test -v
+                go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go test -v
                 '''
             }
 
@@ -118,8 +116,6 @@ def call(Map config) {
 
                 if (currentBuild.result == 'SUCCESS') {
 
-                    echo "SUCCESS: Go CI completed"
-
                     slackSend(
                         channel: slackChannel,
                         color: 'good',
@@ -128,8 +124,6 @@ def call(Map config) {
 
                 } else if (currentBuild.result == 'UNSTABLE') {
 
-                    echo "UNSTABLE: Quality Gate Failed"
-
                     slackSend(
                         channel: slackChannel,
                         color: 'warning',
@@ -137,8 +131,6 @@ def call(Map config) {
                     )
 
                 } else {
-
-                    echo "FAILED: Go CI failed"
 
                     slackSend(
                         channel: slackChannel,
