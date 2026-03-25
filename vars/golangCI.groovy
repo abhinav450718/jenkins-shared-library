@@ -7,8 +7,7 @@ def call(Map config) {
         def sonarProjectKey  = config.sonarProjectKey ?: 'employee-api'
         def sonarProjectName = config.sonarProjectName ?: 'employee-api'
         def slackChannel     = config.slackChannel ?: '#ci-operation-notifications'
-
-        def REPORT_DIR = "reports"
+        def REPORT_DIR       = "reports"
 
         try {
 
@@ -23,12 +22,10 @@ def call(Map config) {
             stage('Setup Go') {
                 sh '''
                     GO_VERSION=1.22.5
-
                     if [ ! -d "go" ]; then
                         curl -sLO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                         tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
                     fi
-
                     export GOROOT=$(pwd)/go
                     export PATH=$GOROOT/bin:$PATH
                     go version
@@ -43,7 +40,6 @@ def call(Map config) {
                 sh """
                     export GOROOT=\$(pwd)/go
                     export PATH=\$GOROOT/bin:\$PATH
-
                     echo "========== BUILD REPORT =========="
                     go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go build 2>&1 | tee ${REPORT_DIR}/build.log
                     echo "=================================="
@@ -54,7 +50,6 @@ def call(Map config) {
                 sh """
                     export GOROOT=\$(pwd)/go
                     export PATH=\$GOROOT/bin:\$PATH
-
                     echo "========== TEST REPORT =========="
                     go list ./... 2>/dev/null | grep -v "/go/test" | xargs -r go test -v 2>&1 | tee ${REPORT_DIR}/test.log
                     echo "================================="
@@ -66,7 +61,6 @@ def call(Map config) {
                     sh """
                         export GOROOT=\$(pwd)/go
                         export PATH=\$GOROOT/bin:\$PATH
-
                         echo "========== SONARQUBE ANALYSIS =========="
                         npx sonar-scanner \
                             -Dsonar.projectKey=${sonarProjectKey} \
@@ -95,7 +89,6 @@ def call(Map config) {
         } finally {
 
             stage('Post Actions') {
-
                 if (currentBuild.result == 'SUCCESS') {
                     slackSend(
                         channel: slackChannel,
@@ -109,7 +102,6 @@ def call(Map config) {
                         message: "FAILED - Go CI\nJob: ${env.JOB_NAME}\nBuild: #${env.BUILD_NUMBER}\nURL: ${env.BUILD_URL}"
                     )
                 }
-
                 cleanWs()
             }
         }
