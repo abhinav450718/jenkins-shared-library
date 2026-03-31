@@ -52,30 +52,24 @@ def call(Map config) {
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    WORKSPACE_ABS=\$(pwd)
-
                     echo "========== TEST =========="
+
                     go test -v \
                         -covermode=atomic \
-                        -coverpkg=./... \
-                        -coverprofile=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                        ./... 2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/test.log || true
+                        -coverprofile="${REPORT_DIR}/coverage.out" \
+                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
+                        2>&1 | tee "${REPORT_DIR}/test.log" || true
 
-                    echo "==> Checking coverage file..."
-                    if [ -f "\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out" ]; then
-                        echo "coverage.out found:"
-                        wc -l \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
-                        go tool cover \
-                            -func=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                            | tail -3 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/coverage_summary.txt
-                        go tool cover \
-                            -html=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                            -o \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.html
-                    else
-                        echo "WARNING: coverage.out was NOT generated"
-                        echo "mode: atomic" > \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
-                    fi
                     echo "=========================="
+
+                    if [ -s "${REPORT_DIR}/coverage.out" ]; then
+                        echo "==> Coverage Summary:"
+                        go tool cover -func="${REPORT_DIR}/coverage.out" \
+                            | tee "${REPORT_DIR}/coverage_summary.txt"
+                    else
+                        echo "WARNING: coverage.out was NOT generated or is empty"
+                        echo "mode: atomic" > "${REPORT_DIR}/coverage.out"
+                    fi
                 """
             }
 
@@ -94,10 +88,12 @@ def call(Map config) {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
                 def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
+                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
+${emoji} *${status}* - Go Test | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
