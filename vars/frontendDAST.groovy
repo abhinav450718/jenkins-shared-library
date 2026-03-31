@@ -1,6 +1,6 @@
 def call(Map config) {
 
-    def TARGET_URL  = config.targetUrl  ?: "http://98.92.250.177"
+    def TARGET_URL  = config.targetUrl  ?: "http://100.49.42.244"
     def ZAP_PORT    = config.zapPort    ?: "9000"
     def ZAP_API_KEY = config.zapApiKey  ?: "frontendkey"
     def REPORT_DIR  = config.reportDir  ?: "zap-reports"
