@@ -63,8 +63,47 @@ def call(Map config) {
                         2>&1 | tee "${REPORT_DIR}/gitleaks.log" || true
 
                     echo "==> Scan complete"
-                    echo "==> Total findings:"
-                    grep -c '"RuleID"' "${REPORT_DIR}/gitleaks-report.json" || echo "0 findings"
+                    TOTAL=\$(grep -c '"RuleID"' "${REPORT_DIR}/gitleaks-report.json" || echo 0)
+                    echo "==> Total findings: \${TOTAL}"
+                """
+            }
+
+            stage('Convert Report') {
+                sh """
+                    set -e
+                    echo "==> Converting Gitleaks JSON to Warnings NG format..."
+
+                    python3 << 'PYEOF'
+import json, os
+
+report_path = "${REPORT_DIR}/gitleaks-report.json"
+output_path = "${REPORT_DIR}/gitleaks-warnings.json"
+
+with open(report_path) as f:
+    content = f.read().strip()
+
+findings = json.loads(content) if content and content != "null" else []
+
+issues = []
+for item in findings:
+    issues.append({
+        "fileName"    : item.get("File", "unknown"),
+        "lineStart"   : item.get("StartLine", 0),
+        "lineEnd"     : item.get("EndLine", 0),
+        "message"     : item.get("RuleID", "unknown-rule") + " - " + item.get("Description", ""),
+        "severity"    : "HIGH",
+        "type"        : item.get("RuleID", "secret"),
+        "category"    : "Credential Leak",
+        "fingerprint" : item.get("Fingerprint", "")
+    })
+
+wrapper = { "issues": issues }
+
+with open(output_path, "w") as f:
+    json.dump(wrapper, f, indent=2)
+
+print("==> Converted {} findings to Warnings NG format".format(len(issues)))
+PYEOF
                 """
             }
 
@@ -72,7 +111,7 @@ def call(Map config) {
                 recordIssues(
                     tools: [
                         issues(
-                            pattern: "${REPORT_DIR}/gitleaks-report.json",
+                            pattern: "${REPORT_DIR}/gitleaks-warnings.json",
                             name: 'Gitleaks',
                             id: 'gitleaks'
                         )
