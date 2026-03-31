@@ -82,14 +82,20 @@ def call(Map config) {
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    go test -v \
+                    echo "==> Running tests and generating coverage..."
+
+                    go test \
+                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
                         -covermode=atomic \
                         -coverprofile="${REPORT_DIR}/coverage.out" \
-                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
                         2>&1 | tee "${REPORT_DIR}/test.log" || true
 
-                    if [ ! -f "${REPORT_DIR}/coverage.out" ]; then
-                        echo "WARNING: coverage.out not generated, creating empty file"
+                    echo "==> Coverage file check:"
+                    if [ -s "${REPORT_DIR}/coverage.out" ]; then
+                        echo "coverage.out generated successfully:"
+                        cat "${REPORT_DIR}/coverage.out"
+                    else
+                        echo "WARNING: coverage.out empty or missing, creating placeholder"
                         echo "mode: atomic" > "${REPORT_DIR}/coverage.out"
                     fi
                 """
@@ -102,22 +108,31 @@ def call(Map config) {
                         export PATH=${SONAR_DIR}/bin:\$PATH
 
                         echo "==> Running SonarQube Analysis..."
-                        echo "==> SONAR_HOST_URL : \${SONAR_HOST_URL}"
 
                         sonar-scanner \
                             -Dsonar.projectKey=${sonarProjectKey} \
                             -Dsonar.projectName="${sonarProjectName}" \
                             -Dsonar.projectVersion=1.0 \
-                            -Dsonar.sources=. \
-                            -Dsonar.exclusions=**/vendor/**,**/*_test.go,**/docs/**,**/reports/**,**/*.md \
-                            -Dsonar.tests=. \
+                            -Dsonar.language=go \
+                            -Dsonar.sources=api,client,config,middleware,routes,model,migration \
+                            -Dsonar.tests=api,client,config,middleware,routes \
                             -Dsonar.test.inclusions=**/*_test.go \
+                            -Dsonar.exclusions=**/vendor/**,**/docs/**,**/reports/**,**/*.md \
                             -Dsonar.go.coverage.reportPaths="${REPORT_DIR}/coverage.out" \
                             -Dsonar.sourceEncoding=UTF-8 \
                             2>&1 | tee "${REPORT_DIR}/sonar.log"
 
                         echo "==> SonarQube Analysis complete"
                     """
+                }
+            }
+
+            stage('Quality Gate') {
+                timeout(time: 5, unit: 'MINUTES') {
+                    def qg = waitForQualityGate()
+                    if (qg.status != 'OK') {
+                        error "Pipeline aborted: Quality Gate status = ${qg.status}"
+                    }
                 }
             }
 
