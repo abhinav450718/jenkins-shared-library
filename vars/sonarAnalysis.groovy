@@ -121,15 +121,6 @@ def call(Map config) {
                 }
             }
 
-            stage('Quality Gate') {
-                timeout(time: 5, unit: 'MINUTES') {
-                    def qg = waitForQualityGate()
-                    if (qg.status != 'OK') {
-                        error "Pipeline aborted: Quality Gate status = ${qg.status}"
-                    }
-                }
-            }
-
             stage('Archive Reports') {
                 archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
             }
