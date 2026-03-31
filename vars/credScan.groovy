@@ -55,8 +55,8 @@ def call(Map config) {
 
                     ${GITLEAKS_BIN} detect \
                         --source=. \
-                        --report-format=sarif \
-                        --report-path="${REPORT_DIR}/gitleaks-report.sarif" \
+                        --report-format=json \
+                        --report-path="${REPORT_DIR}/gitleaks-report.json" \
                         --redact \
                         --verbose \
                         --no-git \
@@ -64,8 +64,27 @@ def call(Map config) {
 
                     echo "==> Scan complete"
                     echo "==> Total findings:"
-                    grep -c '"ruleId"' "${REPORT_DIR}/gitleaks-report.sarif" || echo "0 findings"
+                    grep -c '"RuleID"' "${REPORT_DIR}/gitleaks-report.json" || echo "0 findings"
                 """
+            }
+
+            stage('Publish Report') {
+                recordIssues(
+                    tools: [
+                        issues(
+                            pattern: "${REPORT_DIR}/gitleaks-report.json",
+                            name: 'Gitleaks',
+                            id: 'gitleaks'
+                        )
+                    ],
+                    qualityGates: [[
+                        threshold: 1,
+                        type: 'TOTAL',
+                        unstable: true
+                    ]],
+                    name: 'Gitleaks Credential Scan',
+                    skipPublishingChecks: true
+                )
             }
 
             stage('Archive Reports') {
@@ -83,10 +102,12 @@ def call(Map config) {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
                 def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
+                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
+${emoji} *${status}* - Credential Scan | OT-Microservices
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
