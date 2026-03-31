@@ -1,26 +1,13 @@
-/**
- * vars/goBuild.groovy
- * Jenkins Shared Library — Employee API (Go)
- *
- * Usage in Jenkinsfile:
- *   @Library('employee-shared-lib') _
- *   goBuild(
- *       repoUrl         : 'https://github.com/org/employee-api.git',
- *       branch          : 'main',
- *       sonarProjectKey : 'employee-api',
- *       sonarProjectName: 'employee-api',
- *       slackChannel    : '#ci-operation-notifications'
- *   )
- */
-
 def call(Map config) {
     node {
         def repoUrl          = config.repoUrl
         def branch           = config.branch           ?: 'main'
+        def gitCredentialsId = config.gitCredentialsId ?: ''
         def sonarProjectKey  = config.sonarProjectKey  ?: 'employee-api'
-        def sonarProjectName = config.sonarProjectName ?: 'employee-api'
+        def sonarProjectName = config.sonarProjectName ?: 'Employee API'
         def slackChannel     = config.slackChannel     ?: '#ci-operation-notifications'
         def GO_VERSION       = config.goVersion        ?: '1.22.5'
+        def SONAR_VERSION    = '5.0.1.3006'
         def REPORT_DIR       = 'reports'
 
         try {
@@ -32,7 +19,14 @@ def call(Map config) {
 
             // ─────────────────────────────────────────────────────────────
             stage('Checkout Code') {
-                git branch: branch, url: repoUrl
+                if (gitCredentialsId) {
+                    git branch: branch,
+                        url: repoUrl,
+                        credentialsId: gitCredentialsId
+                } else {
+                    git branch: branch,
+                        url: repoUrl
+                }
             }
 
             // ─────────────────────────────────────────────────────────────
@@ -54,6 +48,24 @@ def call(Map config) {
             }
 
             // ─────────────────────────────────────────────────────────────
+            stage('Setup SonarScanner') {
+                sh """
+                    SONAR_VERSION=${SONAR_VERSION}
+                    if [ ! -f sonar-scanner/bin/sonar-scanner ]; then
+                        echo "==> Downloading sonar-scanner \${SONAR_VERSION}"
+                        curl -sLO https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-\${SONAR_VERSION}-linux.zip
+                        unzip -q sonar-scanner-cli-\${SONAR_VERSION}-linux.zip
+                        mv sonar-scanner-\${SONAR_VERSION}-linux sonar-scanner
+                        rm -f sonar-scanner-cli-\${SONAR_VERSION}-linux.zip
+                        echo "==> sonar-scanner installed"
+                    else
+                        echo "==> sonar-scanner already present, skipping download"
+                    fi
+                    sonar-scanner/bin/sonar-scanner --version
+                """
+            }
+
+            // ─────────────────────────────────────────────────────────────
             stage('Prepare Reports') {
                 sh "mkdir -p ${REPORT_DIR}"
             }
@@ -64,9 +76,9 @@ def call(Map config) {
                     export GOROOT=\$(pwd)/go
                     export PATH=\$GOROOT/bin:\$PATH
                     echo "========== BUILD REPORT =========="
-                    go list ./... 2>/dev/null \
-                        | grep -v "/go/test" \
-                        | xargs -r go build 2>&1 \
+                    go list ./... 2>/dev/null \\
+                        | grep -v "/go/test" \\
+                        | xargs -r go build 2>&1 \\
                         | tee ${REPORT_DIR}/build.log
                     echo "=================================="
                 """
@@ -78,10 +90,20 @@ def call(Map config) {
                     export GOROOT=\$(pwd)/go
                     export PATH=\$GOROOT/bin:\$PATH
                     echo "========== TEST REPORT =========="
-                    go list ./... 2>/dev/null \
-                        | grep -v "/go/test" \
-                        | xargs -r go test -v 2>&1 \
+                    go list ./... 2>/dev/null \\
+                        | grep -v "/go/test" \\
+                        | xargs -r go test -v \\
+                            -coverprofile=${REPORT_DIR}/coverage.out \\
+                            -covermode=atomic 2>&1 \\
                         | tee ${REPORT_DIR}/test.log
+
+                    echo "==> Generating HTML coverage report"
+                    export GOROOT=\$(pwd)/go
+                    export PATH=\$GOROOT/bin:\$PATH
+                    go tool cover \\
+                        -html=${REPORT_DIR}/coverage.out \\
+                        -o ${REPORT_DIR}/coverage.html 2>/dev/null || true
+
                     echo "================================="
                 """
             }
@@ -92,14 +114,19 @@ def call(Map config) {
                     sh """
                         export GOROOT=\$(pwd)/go
                         export PATH=\$GOROOT/bin:\$PATH
+                        export PATH=\$(pwd)/sonar-scanner/bin:\$PATH
+
                         echo "========== SONARQUBE ANALYSIS =========="
-                        npx sonar-scanner \\
+                        sonar-scanner \\
                             -Dsonar.projectKey=${sonarProjectKey} \\
-                            -Dsonar.projectName=${sonarProjectName} \\
+                            -Dsonar.projectName="${sonarProjectName}" \\
                             -Dsonar.sources=. \\
-                            -Dsonar.exclusions=**/go/test/** \\
+                            -Dsonar.exclusions=**/vendor/**,**/go/test/**,**/*.html \\
+                            -Dsonar.tests=. \\
+                            -Dsonar.test.inclusions=**/*_test.go \\
+                            -Dsonar.go.coverage.reportPaths=${REPORT_DIR}/coverage.out \\
                             -Dsonar.projectBaseDir=. \\
-                        | tee ${REPORT_DIR}/sonar.log
+                            | tee ${REPORT_DIR}/sonar.log
                         echo "========================================"
                     """
                 }
@@ -119,29 +146,20 @@ def call(Map config) {
 
         } finally {
             stage('Post Actions') {
-                if (currentBuild.result == 'SUCCESS') {
-                    slackSend(
-                        channel: slackChannel,
-                        color  : 'good',
-                        message: """\
-SUCCESS ✅ - Go CI | Employee API
-Job    : ${env.JOB_NAME}
-Branch : ${branch}
-Build  : #${env.BUILD_NUMBER}
-URL    : ${env.BUILD_URL}""".stripIndent()
-                    )
-                } else {
-                    slackSend(
-                        channel: slackChannel,
-                        color  : 'danger',
-                        message: """\
-FAILED ❌ - Go CI | Employee API
-Job    : ${env.JOB_NAME}
-Branch : ${branch}
-Build  : #${env.BUILD_NUMBER}
-URL    : ${env.BUILD_URL}""".stripIndent()
-                    )
-                }
+                def status  = currentBuild.result ?: 'FAILURE'
+                def color   = (status == 'SUCCESS') ? 'good' : 'danger'
+                def emoji   = (status == 'SUCCESS') ? '✅' : '❌'
+
+                slackSend(
+                    channel: slackChannel,
+                    color  : color,
+                    message: """\
+${emoji} *${status}* - Go CI | Employee API
+*Job*    : ${env.JOB_NAME}
+*Branch* : ${branch}
+*Build*  : #${env.BUILD_NUMBER}
+*URL*    : ${env.BUILD_URL}""".stripIndent()
+                )
                 cleanWs()
             }
         }
