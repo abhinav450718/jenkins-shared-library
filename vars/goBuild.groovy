@@ -5,10 +5,11 @@ def call(Map config) {
         def gitCredentialsId = config.gitCredentialsId ?: ''
         def GO_VERSION       = config.goVersion        ?: '1.22.5'
         def slackChannel     = config.slackChannel     ?: '#ci-operation-notifications'
-        def REPORT_DIR       = 'reports'
 
-        def TOOLS_DIR = '/var/lib/jenkins/tools'
-        def GO_DIR    = "${TOOLS_DIR}/go-${GO_VERSION}"
+        def TOOLS_DIR  = '/var/lib/jenkins/tools'
+        def GO_DIR     = "${TOOLS_DIR}/go-${GO_VERSION}"
+        def BINARY_DIR = 'build'
+        def BINARY     = "${BINARY_DIR}/employee-api"
 
         try {
 
@@ -35,79 +36,83 @@ def call(Map config) {
                         mv go ${GO_DIR}
                         rm -f go${GO_VERSION}.linux-amd64.tar.gz
                     else
-                        echo "==> Go ${GO_VERSION} already at ${GO_DIR}, skipping"
+                        echo "==> Go ${GO_VERSION} already cached at ${GO_DIR}, skipping install"
                     fi
                     ${GO_DIR}/bin/go version
                 """
             }
 
-            stage('Prepare Reports') {
-                sh "mkdir -p ${REPORT_DIR}"
-            }
-
-            stage('Test') {
+            stage('Download Dependencies') {
                 sh """
                     set -e
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    WORKSPACE_ABS=\$(pwd)
-
-                    echo "========== TEST =========="
-
-                    # Only test packages that actually have tests:
-                    # api, client, config, middleware, routes
-                    # Exclude: docs, model, migration (no test files)
-                    go test \
-                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
-                        -v \
-                        -covermode=atomic \
-                        -coverprofile=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                        2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/test.log || true
-
-                    echo "=========================="
-
-                    echo "==> Checking coverage file..."
-                    if [ -s "\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out" ]; then
-                        echo "coverage.out found and non-empty:"
-                        wc -l \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
-
-                        echo "==> Coverage Summary:"
-                        go tool cover \
-                            -func=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                            | tee \${WORKSPACE_ABS}/${REPORT_DIR}/coverage_summary.txt
-
-                        echo "==> Generating HTML coverage report..."
-                        go tool cover \
-                            -html=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                            -o \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.html
-
-                        echo "==> Total Coverage:"
-                        go tool cover \
-                            -func=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                            | grep "^total:"
-                    else
-                        echo "WARNING: coverage.out was NOT generated or is empty"
-                        echo "mode: atomic" > \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
-                    fi
+                    echo "==> Downloading Go module dependencies..."
+                    go mod download
+                    echo "==> go mod verify..."
+                    go mod verify
                 """
             }
 
-            stage('Publish Coverage Report') {
-                publishHTML(target: [
-                    allowMissing         : false,
-                    alwaysLinkToLastBuild: true,
-                    keepAll              : true,
-                    reportDir            : "${REPORT_DIR}",
-                    reportFiles          : 'coverage.html',
-                    reportName           : 'Go Coverage Report',
-                    reportTitles         : 'Coverage'
-                ])
+            stage('Code Compilation') {
+                sh """
+                    set -e
+                    export GOROOT=${GO_DIR}
+                    export GOPATH=\$HOME/go
+                    export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
+
+                    mkdir -p ${BINARY_DIR}
+
+                    echo "========== COMPILATION =========="
+                    echo "Packages being compiled:"
+                    go list ./...
+                    echo "================================="
+
+                    # Build the final binary from main.go (root package)
+                    # -v  : verbose — prints each package name as it is compiled
+                    # -o  : output binary path
+                    go build -v -o ${BINARY} .
+
+                    echo "==> Build complete. Binary info:"
+                    ls -lh ${BINARY}
+                    file  ${BINARY}
+                """
             }
 
-            stage('Archive Reports') {
-                archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
+            stage('Generate Build Manifest') {
+                sh """
+                    set -e
+                    export GOROOT=${GO_DIR}
+                    export GOPATH=\$HOME/go
+                    export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
+
+                    MANIFEST="${BINARY_DIR}/build-manifest.txt"
+
+                    echo "===== Employee API — Build Manifest =====" >  \$MANIFEST
+                    echo "Build Date   : \$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> \$MANIFEST
+                    echo "Branch       : ${branch}"                            >> \$MANIFEST
+                    echo "Go Version   : \$(go version)"                       >> \$MANIFEST
+                    echo "Module       : \$(go list -m)"                       >> \$MANIFEST
+                    echo ""                                                    >> \$MANIFEST
+                    echo "--- Compiled Packages ---"                          >> \$MANIFEST
+                    go list -v ./... >> \$MANIFEST
+                    echo ""                                                    >> \$MANIFEST
+                    echo "--- Binary Details ---"                              >> \$MANIFEST
+                    ls -lh ${BINARY} >> \$MANIFEST
+                    file  ${BINARY} >> \$MANIFEST
+                    echo ""                                                    >> \$MANIFEST
+                    echo "--- Module Dependencies ---"                         >> \$MANIFEST
+                    go list -m all  >> \$MANIFEST
+
+                    echo "==> Manifest written to \$MANIFEST"
+                    cat \$MANIFEST
+                """
+            }
+
+            stage('Archive Artifacts') {
+                archiveArtifacts artifacts: "${BINARY_DIR}/**", fingerprint: true
             }
 
             currentBuild.result = 'SUCCESS'
@@ -118,15 +123,15 @@ def call(Map config) {
             throw err
 
         } finally {
-            stage('Post Actions') {
+            stage('Notify') {
                 def status = currentBuild.result ?: 'FAILURE'
-                def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
+                def color  = (status == 'SUCCESS') ? 'good'   : 'danger'
+                def emoji  = (status == 'SUCCESS') ? '✅'     : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
-${emoji} *${status}* - Go Test | Employee API
+${emoji} *${status}* — Go Build | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
