@@ -164,12 +164,10 @@ def call(Map config) {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
                 def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
-${emoji} *${status}* - SonarQube Analysis | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
