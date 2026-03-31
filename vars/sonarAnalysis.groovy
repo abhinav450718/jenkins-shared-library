@@ -82,22 +82,34 @@ def call(Map config) {
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    echo "==> Running tests and generating coverage..."
+                    echo "==> Go version:"
+                    go version
 
-                    go test \
-                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
+                    echo "==> Current directory:"
+                    pwd
+
+                    echo "==> Package list:"
+                    go list ./...
+
+                    echo "==> Running go test with coverage..."
+                    go test -v \
                         -covermode=atomic \
                         -coverprofile="${REPORT_DIR}/coverage.out" \
+                        ./api/... \
+                        ./client/... \
+                        ./config/... \
+                        ./middleware/... \
+                        ./routes/... \
                         2>&1 | tee "${REPORT_DIR}/test.log" || true
 
-                    echo "==> Coverage file check:"
-                    if [ -s "${REPORT_DIR}/coverage.out" ]; then
-                        echo "coverage.out generated successfully:"
-                        cat "${REPORT_DIR}/coverage.out"
-                    else
-                        echo "WARNING: coverage.out empty or missing, creating placeholder"
-                        echo "mode: atomic" > "${REPORT_DIR}/coverage.out"
-                    fi
+                    echo "==> Lines in coverage.out:"
+                    wc -l "${REPORT_DIR}/coverage.out"
+
+                    echo "==> First 10 lines of coverage.out:"
+                    head -10 "${REPORT_DIR}/coverage.out"
+
+                    echo "==> Coverage summary:"
+                    go tool cover -func="${REPORT_DIR}/coverage.out" || true
                 """
             }
 
@@ -107,18 +119,19 @@ def call(Map config) {
                         set -e
                         export PATH=${SONAR_DIR}/bin:\$PATH
 
-                        echo "==> Running SonarQube Analysis..."
+                        echo "==> Coverage file being sent to Sonar:"
+                        cat "${REPORT_DIR}/coverage.out"
 
+                        echo "==> Running SonarQube Analysis..."
                         sonar-scanner \
                             -Dsonar.projectKey=${sonarProjectKey} \
                             -Dsonar.projectName="${sonarProjectName}" \
                             -Dsonar.projectVersion=1.0 \
+                            -Dsonar.sources=. \
                             -Dsonar.language=go \
-                            -Dsonar.sources=api,client,config,middleware,routes,model,migration \
-                            -Dsonar.tests=api,client,config,middleware,routes \
-                            -Dsonar.test.inclusions=**/*_test.go \
-                            -Dsonar.exclusions=**/vendor/**,**/docs/**,**/reports/**,**/*.md \
                             -Dsonar.go.coverage.reportPaths="${REPORT_DIR}/coverage.out" \
+                            -Dsonar.exclusions=**/vendor/**,**/docs/**,**/reports/**,**/*.md,**/*_test.go \
+                            -Dsonar.test.inclusions=**/*_test.go \
                             -Dsonar.sourceEncoding=UTF-8 \
                             2>&1 | tee "${REPORT_DIR}/sonar.log"
 
@@ -151,10 +164,12 @@ def call(Map config) {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
                 def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
+                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
+${emoji} *${status}* - SonarQube Analysis | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
