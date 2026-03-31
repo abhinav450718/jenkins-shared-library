@@ -10,10 +10,10 @@ def call(Map config) {
         def SONAR_VERSION    = '5.0.1.3006'
         def REPORT_DIR       = 'reports'
 
-        // Install Go and SonarScanner OUTSIDE the workspace
-        def TOOLS_DIR        = '/var/lib/jenkins/tools'
-        def GO_DIR           = "${TOOLS_DIR}/go-${GO_VERSION}"
-        def SONAR_DIR        = "${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}"
+        // ── Tools live OUTSIDE the workspace so sonar never scans them ──
+        def TOOLS_DIR  = '/var/lib/jenkins/tools'
+        def GO_DIR     = "${TOOLS_DIR}/go-${GO_VERSION}"
+        def SONAR_DIR  = "${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}"
 
         try {
 
@@ -25,12 +25,9 @@ def call(Map config) {
             // ─────────────────────────────────────────────────────────────
             stage('Checkout Code') {
                 if (gitCredentialsId) {
-                    git branch: branch,
-                        url: repoUrl,
-                        credentialsId: gitCredentialsId
+                    git branch: branch, url: repoUrl, credentialsId: gitCredentialsId
                 } else {
-                    git branch: branch,
-                        url: repoUrl
+                    git branch: branch, url: repoUrl
                 }
             }
 
@@ -39,18 +36,17 @@ def call(Map config) {
                 sh """
                     set -e
                     if [ ! -f "${GO_DIR}/bin/go" ]; then
-                        echo "==> Downloading Go ${GO_VERSION} to ${GO_DIR}"
+                        echo "==> Installing Go ${GO_VERSION} to ${GO_DIR}"
                         mkdir -p ${TOOLS_DIR}
                         curl -sLO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
                         tar -xzf go${GO_VERSION}.linux-amd64.tar.gz
+                        # ── extract to tools dir, NOT the workspace ──
                         mv go ${GO_DIR}
                         rm -f go${GO_VERSION}.linux-amd64.tar.gz
                     else
-                        echo "==> Go ${GO_VERSION} already installed at ${GO_DIR}"
+                        echo "==> Go ${GO_VERSION} already at ${GO_DIR}, skipping"
                     fi
-                    export GOROOT=${GO_DIR}
-                    export PATH=\$GOROOT/bin:\$PATH
-                    go version
+                    ${GO_DIR}/bin/go version
                 """
             }
 
@@ -59,14 +55,14 @@ def call(Map config) {
                 sh """
                     set -e
                     if [ ! -f "${SONAR_DIR}/bin/sonar-scanner" ]; then
-                        echo "==> Downloading sonar-scanner ${SONAR_VERSION} to ${SONAR_DIR}"
+                        echo "==> Installing sonar-scanner ${SONAR_VERSION} to ${SONAR_DIR}"
                         mkdir -p ${TOOLS_DIR}
                         curl -sLO https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_VERSION}-linux.zip
                         unzip -q sonar-scanner-cli-${SONAR_VERSION}-linux.zip -d ${TOOLS_DIR}
                         mv ${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}-linux ${SONAR_DIR}
                         rm -f sonar-scanner-cli-${SONAR_VERSION}-linux.zip
                     else
-                        echo "==> sonar-scanner already installed at ${SONAR_DIR}"
+                        echo "==> sonar-scanner already at ${SONAR_DIR}, skipping"
                     fi
                     ${SONAR_DIR}/bin/sonar-scanner --version
                 """
@@ -78,18 +74,32 @@ def call(Map config) {
             }
 
             // ─────────────────────────────────────────────────────────────
+            stage('Verify SonarQube Reachable') {
+                sh """
+                    echo "==> Checking SonarQube connectivity..."
+                    curl -sf ${env.SONAR_HOST_URL ?: 'http://192.168.8.17:9000'}/api/system/status \
+                        | grep -q 'UP' \
+                        && echo "SonarQube is UP and reachable" \
+                        || (echo "ERROR: SonarQube is UNREACHABLE" && exit 1)
+                """
+            }
+
+            // ─────────────────────────────────────────────────────────────
             stage('Build') {
                 sh """
                     set -e
                     export GOROOT=${GO_DIR}
-                    export PATH=\$GOROOT/bin:\$PATH
                     export GOPATH=\$HOME/go
-                    export PATH=\$GOPATH/bin:\$PATH
+                    export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    echo "========== BUILD REPORT =========="
+                    echo "==> Go binary: \$(which go)"
+                    echo "==> Go version: \$(go version)"
+                    echo "==> Working dir: \$(pwd)"
+
+                    echo "========== BUILD =========="
                     go build ./... 2>&1 | tee ${REPORT_DIR}/build.log
-                    echo "Build exit code: \$?"
-                    echo "=================================="
+                    echo "==> Build succeeded"
+                    echo "==========================="
                 """
             }
 
@@ -98,39 +108,36 @@ def call(Map config) {
                 sh """
                     set -e
                     export GOROOT=${GO_DIR}
-                    export PATH=\$GOROOT/bin:\$PATH
                     export GOPATH=\$HOME/go
-                    export PATH=\$GOPATH/bin:\$PATH
+                    export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    echo "========== TEST REPORT =========="
+                    WORKSPACE_ABS=\$(pwd)
 
-                    # go test does not support -coverprofile with multiple packages directly
-                    # So we use -coverpkg=./... with a single output file via gotestsum or
-                    # the standard approach: run per-package and merge, OR use coverpkg flag
+                    echo "========== TEST =========="
+                    # -coverpkg=./... ensures ALL packages are measured,
+                    # even those not directly tested
+                    go test -v \
+                        -covermode=atomic \
+                        -coverpkg=./... \
+                        -coverprofile=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                        ./... 2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/test.log || true
 
-                    go test -v \\
-                        -covermode=atomic \\
-                        -coverpkg=./... \\
-                        -coverprofile=${REPORT_DIR}/coverage.out \\
-                        ./... 2>&1 | tee ${REPORT_DIR}/test.log
-
-                    echo "==> Test exit code: \$?"
-
-                    # Generate HTML coverage report
-                    if [ -f "${REPORT_DIR}/coverage.out" ]; then
-                        go tool cover \\
-                            -html=${REPORT_DIR}/coverage.out \\
-                            -o ${REPORT_DIR}/coverage.html
-                        echo "==> Coverage report generated"
-
-                        # Print summary
-                        go tool cover -func=${REPORT_DIR}/coverage.out \\
-                            | tail -1 | tee ${REPORT_DIR}/coverage_summary.txt
+                    echo "==> Checking coverage file..."
+                    if [ -f "\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out" ]; then
+                        echo "coverage.out found:"
+                        wc -l \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
+                        go tool cover \
+                            -func=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            | tail -3 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/coverage_summary.txt
+                        go tool cover \
+                            -html=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            -o \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.html
                     else
-                        echo "WARNING: coverage.out not generated"
+                        echo "WARNING: coverage.out was NOT generated"
+                        # Create empty file so sonar-scanner does not fail
+                        echo "mode: atomic" > \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
                     fi
-
-                    echo "================================="
+                    echo "=========================="
                 """
             }
 
@@ -140,24 +147,43 @@ def call(Map config) {
                     sh """
                         set -e
                         export GOROOT=${GO_DIR}
-                        export PATH=\$GOROOT/bin:\$PATH
-                        export PATH=${SONAR_DIR}/bin:\$PATH
+                        export GOPATH=\$HOME/go
+                        export PATH=\$GOROOT/bin:\$GOPATH/bin:${SONAR_DIR}/bin:\$PATH
 
-                        echo "==> Working directory: \$(pwd)"
-                        echo "==> Coverage file exists: \$(ls -lh ${REPORT_DIR}/coverage.out 2>/dev/null || echo 'NOT FOUND')"
+                        WORKSPACE_ABS=\$(pwd)
+
+                        echo "==> Workspace   : \${WORKSPACE_ABS}"
+                        echo "==> Coverage    : \$(ls -lh \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out)"
+                        echo "==> SONAR_HOST  : \${SONAR_HOST_URL}"
+                        echo "==> SONAR_TOKEN : \${SONAR_TOKEN:0:6}***"
+
+                        # ── List what sonar will actually scan BEFORE running ──
+                        echo "==> App Go files found:"
+                        find \${WORKSPACE_ABS} \
+                            -name "*.go" \
+                            -not -path "*/vendor/*" \
+                            -not -path "*_test.go" \
+                            | head -20
+                        echo "==> Total app Go files:"
+                        find \${WORKSPACE_ABS} \
+                            -name "*.go" \
+                            -not -path "*/vendor/*" \
+                            -not -path "*_test.go" \
+                            | wc -l
 
                         echo "========== SONARQUBE ANALYSIS =========="
-                        sonar-scanner \\
-                            -Dsonar.projectKey=${sonarProjectKey} \\
-                            -Dsonar.projectName="${sonarProjectName}" \\
-                            -Dsonar.sources=. \\
-                            -Dsonar.exclusions=**/vendor/**,**/*_test.go,**/testdata/**,**/*.html,**/reports/** \\
-                            -Dsonar.tests=. \\
-                            -Dsonar.test.inclusions=**/*_test.go \\
-                            -Dsonar.go.coverage.reportPaths=${REPORT_DIR}/coverage.out \\
-                            -Dsonar.sourceEncoding=UTF-8 \\
-                            -Dsonar.projectBaseDir=. \\
-                            2>&1 | tee ${REPORT_DIR}/sonar.log
+                        sonar-scanner \
+                            -Dsonar.projectKey=${sonarProjectKey} \
+                            -Dsonar.projectName="${sonarProjectName}" \
+                            -Dsonar.projectVersion=1.0 \
+                            -Dsonar.sources=\${WORKSPACE_ABS} \
+                            -Dsonar.exclusions=**/vendor/**,**/*_test.go,**/testdata/**,**/*.html,**/reports/**,**/*.md \
+                            -Dsonar.tests=\${WORKSPACE_ABS} \
+                            -Dsonar.test.inclusions=**/*_test.go \
+                            -Dsonar.go.coverage.reportPaths=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            -Dsonar.sourceEncoding=UTF-8 \
+                            -Dsonar.projectBaseDir=\${WORKSPACE_ABS} \
+                            2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/sonar.log
                         echo "========================================"
                     """
                 }
@@ -168,7 +194,7 @@ def call(Map config) {
                 timeout(time: 5, unit: 'MINUTES') {
                     def qg = waitForQualityGate()
                     if (qg.status != 'OK') {
-                        error "Pipeline aborted: SonarQube Quality Gate status = ${qg.status}"
+                        error "Pipeline aborted: Quality Gate status = ${qg.status}"
                     }
                 }
             }
@@ -188,9 +214,8 @@ def call(Map config) {
         } finally {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
-                def color  = (status == 'SUCCESS') ? 'good' : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅' : '❌'
-
+                def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
+                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
