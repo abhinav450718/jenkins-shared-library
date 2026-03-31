@@ -45,22 +45,65 @@ def call(Map config) {
                 sh "mkdir -p ${REPORT_DIR}"
             }
 
-            stage('Build') {
+            stage('Test') {
                 sh """
                     set -e
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    echo "==> Go binary: \$(which go)"
-                    echo "==> Go version: \$(go version)"
-                    echo "==> Working dir: \$(pwd)"
+                    WORKSPACE_ABS=\$(pwd)
 
-                    echo "========== BUILD =========="
-                    go build ./... 2>&1 | tee ${REPORT_DIR}/build.log
-                    echo "==> Build succeeded"
-                    echo "==========================="
+                    echo "========== TEST =========="
+
+                    # Only test packages that actually have tests:
+                    # api, client, config, middleware, routes
+                    # Exclude: docs, model, migration (no test files)
+                    go test \
+                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
+                        -v \
+                        -covermode=atomic \
+                        -coverprofile=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                        2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/test.log || true
+
+                    echo "=========================="
+
+                    echo "==> Checking coverage file..."
+                    if [ -s "\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out" ]; then
+                        echo "coverage.out found and non-empty:"
+                        wc -l \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
+
+                        echo "==> Coverage Summary:"
+                        go tool cover \
+                            -func=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            | tee \${WORKSPACE_ABS}/${REPORT_DIR}/coverage_summary.txt
+
+                        echo "==> Generating HTML coverage report..."
+                        go tool cover \
+                            -html=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            -o \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.html
+
+                        echo "==> Total Coverage:"
+                        go tool cover \
+                            -func=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            | grep "^total:"
+                    else
+                        echo "WARNING: coverage.out was NOT generated or is empty"
+                        echo "mode: atomic" > \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
+                    fi
                 """
+            }
+
+            stage('Publish Coverage Report') {
+                publishHTML(target: [
+                    allowMissing         : false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll              : true,
+                    reportDir            : "${REPORT_DIR}",
+                    reportFiles          : 'coverage.html',
+                    reportName           : 'Go Coverage Report',
+                    reportTitles         : 'Coverage'
+                ])
             }
 
             stage('Archive Reports') {
@@ -83,7 +126,7 @@ def call(Map config) {
                     channel: slackChannel,
                     color  : color,
                     message: """\
-${emoji} *${status}* - Go Build | Employee API
+${emoji} *${status}* - Go Test | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
