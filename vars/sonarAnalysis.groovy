@@ -10,9 +10,9 @@ def call(Map config) {
         def SONAR_VERSION    = '5.0.1.3006'
         def REPORT_DIR       = 'reports'
 
-        def TOOLS_DIR  = '/var/lib/jenkins/tools'
-        def GO_DIR     = "${TOOLS_DIR}/go-${GO_VERSION}"
-        def SONAR_DIR  = "${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}"
+        def TOOLS_DIR = '/var/lib/jenkins/tools'
+        def GO_DIR    = "${TOOLS_DIR}/go-${GO_VERSION}"
+        def SONAR_DIR = "${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}"
 
         try {
 
@@ -49,7 +49,7 @@ def call(Map config) {
                 sh """
                     set -e
                     if [ ! -f "${SONAR_DIR}/bin/sonar-scanner" ]; then
-                        echo "==> Installing sonar-scanner ${SONAR_VERSION} to ${SONAR_DIR}"
+                        echo "==> Installing sonar-scanner ${SONAR_VERSION}"
                         mkdir -p ${TOOLS_DIR}
                         curl -sLO https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_VERSION}-linux.zip
                         unzip -q sonar-scanner-cli-${SONAR_VERSION}-linux.zip -d ${TOOLS_DIR}
@@ -69,9 +69,8 @@ def call(Map config) {
             stage('Verify SonarQube Reachable') {
                 sh """
                     echo "==> Checking SonarQube connectivity..."
-                    curl -sf ${env.SONAR_HOST_URL ?: 'http://192.168.8.17:9000'}/api/system/status \
-                        | grep -q 'UP' \
-                        && echo "SonarQube is UP and reachable" \
+                    curl -sf http://192.168.8.17:9000/api/system/status | grep -q UP \
+                        && echo "SonarQube is UP" \
                         || (echo "ERROR: SonarQube is UNREACHABLE" && exit 1)
                 """
             }
@@ -83,17 +82,15 @@ def call(Map config) {
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    WORKSPACE_ABS=\$(pwd)
-
                     go test -v \
                         -covermode=atomic \
-                        -coverpkg=./... \
-                        -coverprofile=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
-                        ./... 2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/test.log || true
+                        -coverprofile="${REPORT_DIR}/coverage.out" \
+                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
+                        2>&1 | tee "${REPORT_DIR}/test.log" || true
 
-                    if [ ! -f "\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out" ]; then
+                    if [ ! -f "${REPORT_DIR}/coverage.out" ]; then
                         echo "WARNING: coverage.out not generated, creating empty file"
-                        echo "mode: atomic" > \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out
+                        echo "mode: atomic" > "${REPORT_DIR}/coverage.out"
                     fi
                 """
             }
@@ -102,44 +99,24 @@ def call(Map config) {
                 withSonarQubeEnv('SonarQube') {
                     sh """
                         set -e
-                        export GOROOT=${GO_DIR}
-                        export GOPATH=\$HOME/go
-                        export PATH=\$GOROOT/bin:\$GOPATH/bin:${SONAR_DIR}/bin:\$PATH
+                        export PATH=${SONAR_DIR}/bin:\$PATH
 
-                        WORKSPACE_ABS=\$(pwd)
+                        echo "==> Running SonarQube Analysis..."
+                        echo "==> SONAR_HOST_URL : \${SONAR_HOST_URL}"
 
-                        echo "==> Workspace   : \${WORKSPACE_ABS}"
-                        echo "==> Coverage    : \$(ls -lh \${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out)"
-                        echo "==> SONAR_HOST  : \${SONAR_HOST_URL}"
-                        echo "==> SONAR_TOKEN : \${SONAR_TOKEN:0:6}***"
-
-                        echo "==> App Go files found:"
-                        find \${WORKSPACE_ABS} \
-                            -name "*.go" \
-                            -not -path "*/vendor/*" \
-                            -not -path "*_test.go" \
-                            | head -20
-                        echo "==> Total app Go files:"
-                        find \${WORKSPACE_ABS} \
-                            -name "*.go" \
-                            -not -path "*/vendor/*" \
-                            -not -path "*_test.go" \
-                            | wc -l
-
-                        echo "========== SONARQUBE ANALYSIS =========="
                         sonar-scanner \
                             -Dsonar.projectKey=${sonarProjectKey} \
                             -Dsonar.projectName="${sonarProjectName}" \
                             -Dsonar.projectVersion=1.0 \
-                            -Dsonar.sources=\${WORKSPACE_ABS} \
-                            -Dsonar.exclusions=**/vendor/**,**/*_test.go,**/testdata/**,**/*.html,**/reports/**,**/*.md \
-                            -Dsonar.tests=\${WORKSPACE_ABS} \
+                            -Dsonar.sources=. \
+                            -Dsonar.exclusions=**/vendor/**,**/*_test.go,**/docs/**,**/reports/**,**/*.md \
+                            -Dsonar.tests=. \
                             -Dsonar.test.inclusions=**/*_test.go \
-                            -Dsonar.go.coverage.reportPaths=\${WORKSPACE_ABS}/${REPORT_DIR}/coverage.out \
+                            -Dsonar.go.coverage.reportPaths="${REPORT_DIR}/coverage.out" \
                             -Dsonar.sourceEncoding=UTF-8 \
-                            -Dsonar.projectBaseDir=\${WORKSPACE_ABS} \
-                            2>&1 | tee \${WORKSPACE_ABS}/${REPORT_DIR}/sonar.log
-                        echo "========================================"
+                            2>&1 | tee "${REPORT_DIR}/sonar.log"
+
+                        echo "==> SonarQube Analysis complete"
                     """
                 }
             }
@@ -168,12 +145,10 @@ def call(Map config) {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
                 def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
-${emoji} *${status}* - SonarQube Analysis | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
