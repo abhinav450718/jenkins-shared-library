@@ -54,21 +54,21 @@ def call(Map config) {
                     echo "==> Branch : ${branch}"
 
                     # Run 1 — SARIF for Warnings NG plugin display
-                    ${GITLEAKS_BIN} detect \
-                        --source=. \
-                        --report-format=sarif \
-                        --report-path="${REPORT_DIR}/gitleaks-report.sarif" \
-                        --redact \
-                        --no-git \
+                    ${GITLEAKS_BIN} detect \\
+                        --source=. \\
+                        --report-format=sarif \\
+                        --report-path="${REPORT_DIR}/gitleaks-report.sarif" \\
+                        --redact \\
+                        --no-git \\
                         2>&1 || true
 
                     # Run 2 — CSV for human readable artifact download
-                    ${GITLEAKS_BIN} detect \
-                        --source=. \
-                        --report-format=csv \
-                        --report-path="${REPORT_DIR}/gitleaks-report.csv" \
-                        --redact \
-                        --no-git \
+                    ${GITLEAKS_BIN} detect \\
+                        --source=. \\
+                        --report-format=csv \\
+                        --report-path="${REPORT_DIR}/gitleaks-report.csv" \\
+                        --redact \\
+                        --no-git \\
                         2>&1 | tee "${REPORT_DIR}/gitleaks.log" || true
 
                     echo "==> Scan complete"
@@ -82,16 +82,16 @@ def call(Map config) {
                     tools: [
                         sarif(
                             pattern: "${REPORT_DIR}/gitleaks-report.sarif",
-                            name: 'Gitleaks',
-                            id: 'gitleaks'
+                            name   : 'Gitleaks',
+                            id     : 'gitleaks'
                         )
                     ],
                     qualityGates: [[
                         threshold: 1,
-                        type: 'TOTAL',
-                        unstable: true
+                        type     : 'TOTAL',
+                        unstable : true
                     ]],
-                    name: 'Gitleaks Credential Scan',
+                    name                : 'Gitleaks Credential Scan',
                     skipPublishingChecks: true
                 )
             }
@@ -110,8 +110,8 @@ def call(Map config) {
         } finally {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
-                def color  = (status == 'SUCCESS') ? 'good'  : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅'    : '❌'
+                def color  = (status == 'SUCCESS') ? 'good'   : 'danger'
+                def emoji  = (status == 'SUCCESS') ? '✅'     : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
