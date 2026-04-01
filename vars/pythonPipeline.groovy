@@ -1,17 +1,3 @@
-/**
- * Shared Library Step: pythonPipeline
- * File: vars/pythonPipeline.groovy
- *
- * CI pipeline for notification-worker (Python):
- *   1. Clean Workspace
- *   2. Checkout Code
- *   3. Unit Test            -> pytest + pytest-cov
- *   4. Bug Analysis         -> pylint
- *   5. Static Code Analysis -> SonarQube + Quality Gate
- *   6. Dependency Scan      -> Trivy
- *   7. Archive Reports
- *   Post: Slack + cleanWs
- */
 def call(Map config = [:]) {
 
     // Config Defaults
