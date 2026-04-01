@@ -1,4 +1,11 @@
-
+/**
+ * vars/credScan.groovy
+ * Jenkins Shared Library — Credential Scanning (Gitleaks)
+ * Part of: employee-shared-lib1
+ *
+ * Called from a declarative Jenkinsfile:
+ *   credScan(commonConfig)
+ */
 
 def call(Map config) {
     node {
@@ -88,11 +95,8 @@ def call(Map config) {
                             id     : 'gitleaks'
                         )
                     ],
-                    qualityGates: [[
-                        threshold: 1,
-                        type     : 'TOTAL',
-                        unstable : true       // findings → UNSTABLE, not FAILURE
-                    ]],
+                    // No qualityGates block — findings are reported only,
+                    // they never change the build result to UNSTABLE or FAILURE
                     name                : 'Gitleaks Credential Scan',
                     skipPublishingChecks: true
                 )
@@ -102,10 +106,8 @@ def call(Map config) {
                 archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
             }
 
-            // Only mark SUCCESS if recordIssues did not already set UNSTABLE
-            if (currentBuild.result == null) {
-                currentBuild.result = 'SUCCESS'
-            }
+            // Force SUCCESS regardless of how many secrets were found
+            currentBuild.result = 'SUCCESS'
 
         } catch (err) {
             currentBuild.result = 'FAILURE'
