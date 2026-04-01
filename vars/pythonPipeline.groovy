@@ -1,3 +1,17 @@
+/**
+ * Shared Library Step: pythonPipeline
+ * File: vars/pythonPipeline.groovy
+ *
+ * CI pipeline for notification-worker (Python):
+ *   1. Clean Workspace
+ *   2. Checkout Code
+ *   3. Unit Test            -> pytest + pytest-cov
+ *   4. Bug Analysis         -> pylint
+ *   5. Static Code Analysis -> SonarQube + Quality Gate
+ *   6. Dependency Scan      -> Trivy
+ *   7. Archive Reports
+ *   Post: Slack + cleanWs
+ */
 def call(Map config = [:]) {
 
     // Config Defaults
@@ -72,17 +86,40 @@ def call(Map config = [:]) {
             junit allowEmptyResults: true,
                   testResults: "${REPORT_DIR}/test-results.xml"
 
+            // Verify coverage XML was generated (equivalent to JaCoCo verify step)
+            sh """
+                if [ -f ${REPORT_DIR}/coverage.xml ]; then
+                    echo "Coverage report found: ${REPORT_DIR}/coverage.xml"
+                else
+                    echo "WARNING: coverage.xml not generated (no tests ran)."
+                fi
+            """
+
+            // Publish HTML coverage report (equivalent to JaCoCo HTML report)
             publishHTML(target: [
                 allowMissing         : true,
                 alwaysLinkToLastBuild: true,
                 keepAll              : true,
                 reportDir            : "${REPORT_DIR}/coverage-html",
                 reportFiles          : 'index.html',
-                reportName           : 'Pytest Coverage Report'
+                reportName           : 'Python Coverage Report'
             ])
+
+            // Publish coverage trend graph in Jenkins UI
+            // Equivalent to jacoco() publisher in Java pipelines
+            // Requires "Coverage" plugin installed in Jenkins
+            recordCoverage(
+                tools: [[parser: 'COBERTURA', pattern: "${REPORT_DIR}/coverage.xml"]],
+                id: 'python-coverage',
+                name: 'Python Coverage',
+                skipPublishingChecks: true
+            )
         }
 
         // Stage 4: Bug Analysis (pylint)
+        // Python equivalent of Java SonarQube bug/smell pre-scan using Maven
+        // pylint detects: bugs, code smells, convention violations, refactor hints
+        // Its parseable report is later consumed by sonar-scanner in Stage 5
         stage('Bug Analysis') {
             sh """
                 set -e
@@ -91,6 +128,7 @@ def call(Map config = [:]) {
 
                 pip install pylint --quiet
 
+                echo "==> Running pylint bug & code quality analysis..."
                 python3 -m pylint \$(find . -name "*.py" \
                     ! -path "./${VENV_DIR}/*" \
                     ! -path "./tests/*"        \
@@ -103,6 +141,13 @@ def call(Map config = [:]) {
 
                 echo "--- pylint report preview (first 50 lines) ---"
                 head -50 ${REPORT_DIR}/pylint-report.txt || true
+
+                # Summary: count issues by type
+                echo "==> Issue summary:"
+                echo "  Errors   (E): \$(grep -c ': E' ${REPORT_DIR}/pylint-report.txt || echo 0)"
+                echo "  Warnings (W): \$(grep -c ': W' ${REPORT_DIR}/pylint-report.txt || echo 0)"
+                echo "  Refactor (R): \$(grep -c ': R' ${REPORT_DIR}/pylint-report.txt || echo 0)"
+                echo "  Convention(C): \$(grep -c ': C' ${REPORT_DIR}/pylint-report.txt || echo 0)"
             """
 
             archiveArtifacts artifacts: "${REPORT_DIR}/pylint-report.txt",
@@ -114,6 +159,23 @@ def call(Map config = [:]) {
             withSonarQubeEnv(sonarServer) {
                 sh """
                     set -e
+
+                    # Auto-install sonar-scanner CLI if not present on the agent
+                    if ! command -v sonar-scanner > /dev/null 2>&1; then
+                        echo "==> sonar-scanner not found. Installing..."
+                        SONAR_VERSION="6.2.1.4610"
+                        SONAR_ZIP="sonar-scanner-cli-\${SONAR_VERSION}-linux-x64.zip"
+                        SONAR_URL="https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/\${SONAR_ZIP}"
+
+                        curl -fsSL "\${SONAR_URL}" -o /tmp/sonar-scanner.zip
+                        unzip -q /tmp/sonar-scanner.zip -d /opt/
+                        ln -sf /opt/sonar-scanner-\${SONAR_VERSION}-linux-x64/bin/sonar-scanner /usr/local/bin/sonar-scanner
+                        rm -f /tmp/sonar-scanner.zip
+                        echo "==> sonar-scanner installed successfully"
+                    fi
+
+                    sonar-scanner --version
+
                     sonar-scanner \
                         -Dsonar.projectKey=${sonarProjectKey} \
                         -Dsonar.projectName="${sonarProjectName}" \
