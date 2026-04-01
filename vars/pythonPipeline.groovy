@@ -1,14 +1,16 @@
-
 def call(Map config = [:]) {
 
     // Config Defaults
-    def repoUrl           = config.repoUrl          ?: error('repoUrl is required')
-    def branch            = config.branch           ?: 'main'
-    def gitCredentialsId  = config.gitCredentialsId ?: ''
-    def slackChannel      = config.slackChannel     ?: '#ci-operation-notifications'
-    def coverageThreshold = config.coverageThreshold?: '70'
-    def trivySeverity     = config.trivySeverity    ?: 'HIGH,CRITICAL'
-    def trivyFailOnVuln   = config.trivyFailOnVuln  ?: false
+    def repoUrl           = config.repoUrl           ?: error('repoUrl is required')
+    def branch            = config.branch            ?: 'main'
+    def gitCredentialsId  = config.gitCredentialsId  ?: ''
+    def slackChannel      = config.slackChannel      ?: '#ci-operation-notifications'
+    def coverageThreshold = config.coverageThreshold ?: '70'
+    def sonarProjectKey   = config.sonarProjectKey   ?: 'notification-worker'
+    def sonarProjectName  = config.sonarProjectName  ?: 'Notification Worker'
+    def sonarServer       = config.sonarServer       ?: 'SonarQube'
+    def trivySeverity     = config.trivySeverity     ?: 'HIGH,CRITICAL'
+    def trivyFailOnVuln   = config.trivyFailOnVuln   ?: false
     def REPORT_DIR        = 'reports'
     def VENV_DIR          = '.venv'
 
@@ -44,8 +46,7 @@ def call(Map config = [:]) {
                 pip install -r requirements.txt --quiet
                 pip install pytest pytest-cov --quiet
 
-                # Discover tests from root; use --ignore to skip venv.
-                # --co -q first checks if any tests exist to avoid exit code 4.
+                # Check if any test files exist before running
                 TEST_COUNT=\$(pytest . --collect-only -q --ignore=${VENV_DIR} 2>/dev/null | grep "test session starts" -A 999 | grep -c "::" || true)
 
                 if [ "\$TEST_COUNT" -gt 0 ]; then
@@ -58,14 +59,11 @@ def call(Map config = [:]) {
                         --junitxml=${REPORT_DIR}/test-results.xml \
                         -v
                 else
-                    echo "WARNING: No test files found in repository. Skipping coverage enforcement."
-                    echo "Please add tests under a tests/ directory or in test_*.py files."
-                    # Run anyway to generate empty report (won't fail)
+                    echo "WARNING: No test files found. Skipping coverage enforcement."
                     pytest . \
                         --ignore=${VENV_DIR} \
                         --junitxml=${REPORT_DIR}/test-results.xml \
-                        -v \
-                        || true
+                        -v || true
                 fi
 
                 deactivate
@@ -111,7 +109,32 @@ def call(Map config = [:]) {
                              allowEmptyArchive: true
         }
 
-        // Stage 5: Dependency Scan (Trivy)
+        // Stage 5: Static Code Analysis (SonarQube + Quality Gate)
+        stage('Static Code Analysis') {
+            withSonarQubeEnv(sonarServer) {
+                sh """
+                    set -e
+                    sonar-scanner \
+                        -Dsonar.projectKey=${sonarProjectKey} \
+                        -Dsonar.projectName="${sonarProjectName}" \
+                        -Dsonar.sources=. \
+                        -Dsonar.exclusions="**/${VENV_DIR}/**,**/tests/**,**/__pycache__/**,**/venv/**" \
+                        -Dsonar.language=py \
+                        -Dsonar.python.pylint.reportPaths=${REPORT_DIR}/pylint-report.txt \
+                        -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml
+                """
+            }
+
+            // Wait for SonarQube webhook to report Quality Gate result
+            timeout(time: 5, unit: 'MINUTES') {
+                def qg = waitForQualityGate()
+                if (qg.status != 'OK') {
+                    error "SonarQube Quality Gate FAILED: ${qg.status}. Check SonarQube dashboard."
+                }
+            }
+        }
+
+        // Stage 6: Dependency Scan (Trivy)
         stage('Dependency Scan') {
             sh """
                 set -e
@@ -122,15 +145,26 @@ def call(Map config = [:]) {
                 fi
                 trivy --version
 
-                # Full JSON report
+                # Use workspace-local cache to avoid filling /var/lib/jenkins/.cache
+                # and to keep it scoped per-build (auto-cleaned by cleanWs)
+                export TRIVY_CACHE_DIR=\$(pwd)/.trivy-cache
+                mkdir -p \$TRIVY_CACHE_DIR
+
+                echo "==> Disk space available:"
+                df -h \$(pwd)
+
+                # Full JSON report (downloads DB on first run)
                 trivy fs . \
+                    --cache-dir \$TRIVY_CACHE_DIR \
                     --format json \
                     --output ${REPORT_DIR}/trivy-report.json \
                     --severity ${trivySeverity} \
                     --exit-code 0
 
-                # Human-readable table in console + saved to file
+                # Human-readable table (reuses already-downloaded DB)
                 trivy fs . \
+                    --cache-dir \$TRIVY_CACHE_DIR \
+                    --skip-db-update \
                     --format table \
                     --severity ${trivySeverity} \
                     --exit-code 0 \
@@ -139,7 +173,10 @@ def call(Map config = [:]) {
 
             if (trivyFailOnVuln) {
                 def exitCode = sh(
-                    script: "trivy fs . --severity ${trivySeverity} --exit-code 1 --quiet",
+                    script: """
+                        export TRIVY_CACHE_DIR=\$(pwd)/.trivy-cache
+                        trivy fs . --cache-dir \$TRIVY_CACHE_DIR --skip-db-update --severity ${trivySeverity} --exit-code 1 --quiet
+                    """,
                     returnStatus: true
                 )
                 if (exitCode != 0) {
@@ -151,7 +188,7 @@ def call(Map config = [:]) {
                              allowEmptyArchive: true
         }
 
-        // Stage 6: Archive All Reports
+        // Stage 7: Archive All Reports
         stage('Archive Reports') {
             archiveArtifacts artifacts: "${REPORT_DIR}/**",
                              allowEmptyArchive: true,
@@ -170,9 +207,6 @@ def call(Map config = [:]) {
             def status = currentBuild.result ?: 'FAILURE'
             def color  = (status == 'SUCCESS') ? 'good' : 'danger'
 
-            // Slack bold (*text*) must NOT start a line in Groovy triple-quoted
-            // strings — parser treats leading * as multiplication and crashes.
-            // Safe fix: use plain string concatenation.
             def msg = status + ' - Notification Worker CI\n' +
                       'Job    : ' + env.JOB_NAME + '\n' +
                       'Branch : ' + branch + '\n' +
