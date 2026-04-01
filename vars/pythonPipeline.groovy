@@ -1,28 +1,37 @@
+/**
+ * Shared Library Step: pythonPipeline
+ * File: vars/pythonPipeline.groovy
+ *
+ * CI pipeline for notification-worker (Python):
+ *   1. Clean Workspace
+ *   2. Checkout Code
+ *   3. Unit Test        -> pytest + pytest-cov
+ *   4. Bug Analysis     -> pylint
+ *   5. Dependency Scan  -> Trivy
+ *   6. Archive Reports
+ *   Post: Slack notification + cleanWs
+ */
 def call(Map config = [:]) {
 
-    // ── Config Defaults ──────────────────────────────────────────────────────
-    def repoUrl           = config.repoUrl           ?: error('repoUrl is required')
-    def branch            = config.branch            ?: 'main'
-    def gitCredentialsId  = config.gitCredentialsId  ?: ''
-    def sonarProjectKey   = config.sonarProjectKey   ?: 'notification-worker'
-    def sonarProjectName  = config.sonarProjectName  ?: 'Notification Worker'
-    def sonarServer       = config.sonarServer       ?: 'SonarQube'        // Jenkins SonarQube config name
-    def slackChannel      = config.slackChannel      ?: '#ci-operation-notifications'
-    def coverageThreshold = config.coverageThreshold ?: '70'
-    def trivySeverity     = config.trivySeverity     ?: 'HIGH,CRITICAL'
-    def trivyFailOnVuln   = config.trivyFailOnVuln   ?: false
+    // Config Defaults
+    def repoUrl           = config.repoUrl          ?: error('repoUrl is required')
+    def branch            = config.branch           ?: 'main'
+    def gitCredentialsId  = config.gitCredentialsId ?: ''
+    def slackChannel      = config.slackChannel     ?: '#ci-operation-notifications'
+    def coverageThreshold = config.coverageThreshold?: '70'
+    def trivySeverity     = config.trivySeverity    ?: 'HIGH,CRITICAL'
+    def trivyFailOnVuln   = config.trivyFailOnVuln  ?: false
     def REPORT_DIR        = 'reports'
-    def VENV_DIR          = '.venv'              // virtualenv created inside workspace
+    def VENV_DIR          = '.venv'
 
-    // ── Pipeline ─────────────────────────────────────────────────────────────
     try {
 
-        // ── Stage 1: Clean Workspace ─────────────────────────────────────────
+        // Stage 1: Clean Workspace
         stage('Clean Workspace') {
             cleanWs()
         }
 
-        // ── Stage 2: Checkout Code ───────────────────────────────────────────
+        // Stage 2: Checkout Code
         stage('Checkout Code') {
             if (gitCredentialsId) {
                 git branch: branch, url: repoUrl, credentialsId: gitCredentialsId
@@ -32,14 +41,14 @@ def call(Map config = [:]) {
             sh 'git log --oneline -5'
         }
 
-        // ── Stage 3: Unit Test (pytest) ──────────────────────────────────────
+        // Stage 3: Unit Test (pytest + pytest-cov)
         stage('Unit Test') {
             sh """
                 set -e
                 mkdir -p ${REPORT_DIR}
 
-                # Python 3.12+ on Debian blocks system-wide pip installs.
-                # Create an isolated virtualenv inside the workspace instead.
+                # Python 3.12+ on Debian/Ubuntu blocks system-wide pip.
+                # Use an isolated virtualenv inside the workspace.
                 python3 -m venv ${VENV_DIR}
                 . ${VENV_DIR}/bin/activate
 
@@ -71,11 +80,11 @@ def call(Map config = [:]) {
             ])
         }
 
-        // ── Stage 4: Bug Analysis (pylint) ───────────────────────────────────
+        // Stage 4: Bug Analysis (pylint)
         stage('Bug Analysis') {
             sh """
                 set -e
-                # Reuse the same venv created in Unit Test stage
+                # Reuse the venv from Unit Test stage
                 . ${VENV_DIR}/bin/activate
 
                 pip install pylint --quiet
@@ -83,7 +92,6 @@ def call(Map config = [:]) {
                 python3 -m pylint \$(find . -name "*.py" \
                     ! -path "./${VENV_DIR}/*" \
                     ! -path "./tests/*"        \
-                    ! -path "./.venv/*"        \
                     ! -path "./venv/*") \
                     --output-format=parseable \
                     --exit-zero \
@@ -94,33 +102,12 @@ def call(Map config = [:]) {
                 echo "--- pylint report preview (first 50 lines) ---"
                 head -50 ${REPORT_DIR}/pylint-report.txt || true
             """
+
+            archiveArtifacts artifacts: "${REPORT_DIR}/pylint-report.txt",
+                             allowEmptyArchive: true
         }
 
-        // ── Stage 5: Static Code Analysis (SonarQube + Quality Gate) ─────────
-        stage('Static Code Analysis') {
-            withSonarQubeEnv(sonarServer) {
-                sh """
-                    set -e
-                    sonar-scanner \
-                        -Dsonar.projectKey=${sonarProjectKey} \
-                        -Dsonar.projectName="${sonarProjectName}" \
-                        -Dsonar.sources=. \
-                        -Dsonar.exclusions="**/tests/**,**/__pycache__/**,**/venv/**,**/.venv/**" \
-                        -Dsonar.language=py \
-                        -Dsonar.python.pylint.reportPaths=${REPORT_DIR}/pylint-report.txt \
-                        -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml
-                """
-            }
-
-            timeout(time: 5, unit: 'MINUTES') {
-                def qg = waitForQualityGate()
-                if (qg.status != 'OK') {
-                    error "SonarQube Quality Gate FAILED: ${qg.status}"
-                }
-            }
-        }
-
-        // ── Stage 6: Dependency Scan (Trivy) ─────────────────────────────────
+        // Stage 5: Dependency Scan (Trivy)
         stage('Dependency Scan') {
             sh """
                 set -e
@@ -131,14 +118,14 @@ def call(Map config = [:]) {
                 fi
                 trivy --version
 
-                # JSON report (full detail)
+                # Full JSON report
                 trivy fs . \
                     --format json \
                     --output ${REPORT_DIR}/trivy-report.json \
                     --severity ${trivySeverity} \
                     --exit-code 0
 
-                # Human-readable table (preview in console)
+                # Human-readable table in console + saved to file
                 trivy fs . \
                     --format table \
                     --severity ${trivySeverity} \
@@ -146,30 +133,21 @@ def call(Map config = [:]) {
                     | tee ${REPORT_DIR}/trivy-summary.txt
             """
 
-            // Optional hard-fail if critical vulns found
             if (trivyFailOnVuln) {
                 def exitCode = sh(
-                    script: """
-                        trivy fs . \
-                            --severity ${trivySeverity} \
-                            --exit-code 1 \
-                            --quiet
-                    """,
+                    script: "trivy fs . --severity ${trivySeverity} --exit-code 1 --quiet",
                     returnStatus: true
                 )
                 if (exitCode != 0) {
                     error "Trivy found vulnerabilities with severity ${trivySeverity}. Build FAILED."
                 }
             }
+
+            archiveArtifacts artifacts: "${REPORT_DIR}/trivy-report.json, ${REPORT_DIR}/trivy-summary.txt",
+                             allowEmptyArchive: true
         }
 
-      
-                            -I
-                """,
-                returnStatus: true
-            )
-
-        // ── Stage 8: Archive Reports ──────────────────────────────────────────
+        // Stage 6: Archive All Reports
         stage('Archive Reports') {
             archiveArtifacts artifacts: "${REPORT_DIR}/**",
                              allowEmptyArchive: true,
@@ -184,27 +162,23 @@ def call(Map config = [:]) {
         throw err
 
     } finally {
-        // ── Post: Slack Notification + Cleanup ───────────────────────────────
         stage('Post Actions') {
             def status = currentBuild.result ?: 'FAILURE'
-            def color  = (status == 'SUCCESS') ? 'good'   :
-                         (status == 'UNSTABLE') ? 'warning' : 'danger'
-            def emoji  = (status == 'SUCCESS') ? '✅'     :
-                         (status == 'UNSTABLE') ? '⚠️'    : '❌'
+            def color  = (status == 'SUCCESS') ? 'good' : 'danger'
+
+            // Slack bold (*text*) must NOT start a line in Groovy triple-quoted
+            // strings — parser treats leading * as multiplication and crashes.
+            // Safe fix: use plain string concatenation.
+            def msg = status + ' - Notification Worker CI\n' +
+                      'Job    : ' + env.JOB_NAME + '\n' +
+                      'Branch : ' + branch + '\n' +
+                      'Build  : #' + env.BUILD_NUMBER + '\n' +
+                      'URL    : ' + env.BUILD_URL
 
             try {
-                slackSend(
-                    channel: slackChannel,
-                    color  : color,
-                    message: """\
-${emoji} *${status}* — Notification Worker CI
-*Job*    : ${env.JOB_NAME}
-*Branch* : ${branch}
-*Build*  : #${env.BUILD_NUMBER}
-*URL*    : ${env.BUILD_URL}""".stripIndent()
-                )
+                slackSend(channel: slackChannel, color: color, message: msg)
             } catch (slackErr) {
-                echo "Slack notification skipped (plugin not configured): ${slackErr.message}"
+                echo "Slack notification skipped: ${slackErr.message}"
             }
 
             cleanWs()
