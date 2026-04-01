@@ -13,7 +13,6 @@ def call(Map config = [:]) {
     def REPORT_DIR        = 'reports'
     def VENV_DIR          = '.venv'
 
-    // ── Sonar installs to jenkins home (no sudo/permission issues) ──
     def TOOLS_DIR     = '/var/lib/jenkins/tools'
     def SONAR_VERSION = '6.2.1.4610'
     def SONAR_DIR     = "${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}"
@@ -66,7 +65,6 @@ def call(Map config = [:]) {
                         --junitxml=${REPORT_DIR}/test-results.xml \
                         -v 2>&1 | tee ${REPORT_DIR}/test.log || true
 
-                    # ── Minimal valid coverage.xml so sonar/recordCoverage never fails ──
                     cat > ${REPORT_DIR}/coverage.xml << 'XMLEOF'
 <?xml version="1.0" ?>
 <coverage version="7.0" timestamp="0" lines-valid="0" lines-covered="0" line-rate="0" branches-covered="0" branches-valid="0" branch-rate="0" complexity="0">
@@ -130,7 +128,6 @@ XMLEOF
                 sh """
                     set -e
 
-                    # ── Install to jenkins tools dir, NOT /opt ──
                     if [ ! -f "${SONAR_BIN}" ]; then
                         echo "==> Installing sonar-scanner ${SONAR_VERSION} to ${SONAR_DIR}..."
                         mkdir -p ${TOOLS_DIR}
@@ -175,34 +172,43 @@ XMLEOF
                 fi
                 trivy --version
 
-                export TRIVY_CACHE_DIR=\$(pwd)/.trivy-cache
-                mkdir -p \$TRIVY_CACHE_DIR
+                # ── Use a fixed path with NO spaces to avoid trivy arg parsing bug ──
+                TRIVY_CACHE="/var/lib/jenkins/tools/trivy-cache"
+                mkdir -p "\${TRIVY_CACHE}"
 
                 echo "==> Disk space available:"
-                df -h \$(pwd)
+                df -h .
 
+                echo "==> Running Trivy JSON scan..."
                 trivy fs . \
-                    --cache-dir \$TRIVY_CACHE_DIR \
+                    --cache-dir "\${TRIVY_CACHE}" \
                     --format json \
                     --output ${REPORT_DIR}/trivy-report.json \
                     --severity ${trivySeverity} \
-                    --exit-code 0
+                    --exit-code 0 \
+                    --quiet
 
+                echo "==> Running Trivy table scan..."
                 trivy fs . \
-                    --cache-dir \$TRIVY_CACHE_DIR \
+                    --cache-dir "\${TRIVY_CACHE}" \
                     --skip-db-update \
                     --format table \
                     --severity ${trivySeverity} \
                     --exit-code 0 \
+                    --quiet \
                     | tee ${REPORT_DIR}/trivy-summary.txt
             """
 
             if (trivyFailOnVuln) {
                 def exitCode = sh(
                     script: """
-                        export TRIVY_CACHE_DIR=\$(pwd)/.trivy-cache
-                        trivy fs . --cache-dir \$TRIVY_CACHE_DIR --skip-db-update \
-                            --severity ${trivySeverity} --exit-code 1 --quiet
+                        TRIVY_CACHE="/var/lib/jenkins/tools/trivy-cache"
+                        trivy fs . \
+                            --cache-dir "\${TRIVY_CACHE}" \
+                            --skip-db-update \
+                            --severity ${trivySeverity} \
+                            --exit-code 1 \
+                            --quiet
                     """,
                     returnStatus: true
                 )
@@ -249,3 +255,8 @@ XMLEOF
         }
     }
 }
+```
+
+Only one thing changed — the **Trivy cache dir**. The root cause was:
+```
+TRIVY_CACHE_DIR=/var/lib/jenkins/jobs/saarthi/jobs/Abhinav Sikarwar/jobs/...
