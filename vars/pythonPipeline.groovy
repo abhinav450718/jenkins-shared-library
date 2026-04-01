@@ -172,7 +172,6 @@ XMLEOF
                 fi
                 trivy --version
 
-                # ── Use a fixed path with NO spaces to avoid trivy arg parsing bug ──
                 TRIVY_CACHE="/var/lib/jenkins/tools/trivy-cache"
                 mkdir -p "\${TRIVY_CACHE}"
 
@@ -255,8 +254,3 @@ XMLEOF
         }
     }
 }
-```
-
-Only one thing changed — the **Trivy cache dir**. The root cause was:
-```
-TRIVY_CACHE_DIR=/var/lib/jenkins/jobs/saarthi/jobs/Abhinav Sikarwar/jobs/...
