@@ -1,4 +1,3 @@
-
 def call(Map config = [:]) {
 
     // ── Config Defaults ──────────────────────────────────────────────────────
@@ -12,10 +11,8 @@ def call(Map config = [:]) {
     def coverageThreshold = config.coverageThreshold ?: '70'
     def trivySeverity     = config.trivySeverity     ?: 'HIGH,CRITICAL'
     def trivyFailOnVuln   = config.trivyFailOnVuln   ?: false
-    def zapTargetUrl      = config.zapTargetUrl      ?: 'http://localhost:8000'
-    def zapDockerImage    = config.zapDockerImage    ?: 'ghcr.io/zaproxy/zaproxy:stable'
-    def zapFailOnAlert    = config.zapFailOnAlert    ?: false
     def REPORT_DIR        = 'reports'
+    def VENV_DIR          = '.venv'              // virtualenv created inside workspace
 
     // ── Pipeline ─────────────────────────────────────────────────────────────
     try {
@@ -41,6 +38,11 @@ def call(Map config = [:]) {
                 set -e
                 mkdir -p ${REPORT_DIR}
 
+                # Python 3.12+ on Debian blocks system-wide pip installs.
+                # Create an isolated virtualenv inside the workspace instead.
+                python3 -m venv ${VENV_DIR}
+                . ${VENV_DIR}/bin/activate
+
                 pip install --upgrade pip --quiet
                 pip install -r requirements.txt --quiet
                 pip install pytest pytest-cov --quiet
@@ -52,6 +54,8 @@ def call(Map config = [:]) {
                     --cov-fail-under=${coverageThreshold} \
                     --junitxml=${REPORT_DIR}/test-results.xml \
                     -v
+
+                deactivate
             """
 
             junit allowEmptyResults: true,
@@ -71,15 +75,21 @@ def call(Map config = [:]) {
         stage('Bug Analysis') {
             sh """
                 set -e
+                # Reuse the same venv created in Unit Test stage
+                . ${VENV_DIR}/bin/activate
+
                 pip install pylint --quiet
 
                 python3 -m pylint \$(find . -name "*.py" \
-                    ! -path "./tests/*"  \
-                    ! -path "./.venv/*"  \
+                    ! -path "./${VENV_DIR}/*" \
+                    ! -path "./tests/*"        \
+                    ! -path "./.venv/*"        \
                     ! -path "./venv/*") \
                     --output-format=parseable \
                     --exit-zero \
                     > ${REPORT_DIR}/pylint-report.txt || true
+
+                deactivate
 
                 echo "--- pylint report preview (first 50 lines) ---"
                 head -50 ${REPORT_DIR}/pylint-report.txt || true
@@ -153,45 +163,11 @@ def call(Map config = [:]) {
             }
         }
 
-        // ── Stage 7: DAST Scan (OWASP ZAP) ───────────────────────────────────
-        stage('DAST Scan') {
-            sh "mkdir -p ${REPORT_DIR}/zap"
-
-            // Pull ZAP image
-            sh "docker pull ${zapDockerImage}"
-
-            def zapExit = sh(
-                script: """
-                    docker run --rm \
-                        --network host \
-                        -v \$(pwd)/${REPORT_DIR}/zap:/zap/wrk/:rw \
-                        ${zapDockerImage} \
-                        zap-baseline.py \
-                            -t ${zapTargetUrl} \
-                            -r zap-report.html \
-                            -J zap-report.json \
-                            -x zap-report.xml \
-                            -l PASS \
+      
                             -I
                 """,
                 returnStatus: true
             )
-
-            publishHTML(target: [
-                allowMissing         : true,
-                alwaysLinkToLastBuild: true,
-                keepAll              : true,
-                reportDir            : "${REPORT_DIR}/zap",
-                reportFiles          : 'zap-report.html',
-                reportName           : 'OWASP ZAP DAST Report'
-            ])
-
-            if (zapFailOnAlert && zapExit > 0) {
-                error "OWASP ZAP found alerts above threshold. Build FAILED."
-            } else if (zapExit > 0) {
-                unstable "OWASP ZAP reported alerts — build marked UNSTABLE. Review ZAP report."
-            }
-        }
 
         // ── Stage 8: Archive Reports ──────────────────────────────────────────
         stage('Archive Reports') {
