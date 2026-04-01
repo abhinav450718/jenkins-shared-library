@@ -1,3 +1,5 @@
+
+
 def call(Map config) {
     node {
         def repoUrl          = config.repoUrl
@@ -89,7 +91,7 @@ def call(Map config) {
                     qualityGates: [[
                         threshold: 1,
                         type     : 'TOTAL',
-                        unstable : true
+                        unstable : true       // findings → UNSTABLE, not FAILURE
                     ]],
                     name                : 'Gitleaks Credential Scan',
                     skipPublishingChecks: true
@@ -100,7 +102,10 @@ def call(Map config) {
                 archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
             }
 
-            currentBuild.result = 'SUCCESS'
+            // Only mark SUCCESS if recordIssues did not already set UNSTABLE
+            if (currentBuild.result == null) {
+                currentBuild.result = 'SUCCESS'
+            }
 
         } catch (err) {
             currentBuild.result = 'FAILURE'
@@ -110,17 +115,41 @@ def call(Map config) {
         } finally {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
-                def color  = (status == 'SUCCESS') ? 'good'   : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅'     : '❌'
+
+                // ── Colour & emoji map covering all three states ──────────
+                def colorMap = [
+                    'SUCCESS' : 'good',
+                    'UNSTABLE': 'warning',
+                    'FAILURE' : 'danger'
+                ]
+                def emojiMap = [
+                    'SUCCESS' : '✅',
+                    'UNSTABLE': '⚠️',
+                    'FAILURE' : '❌'
+                ]
+
+                def color = colorMap.get(status, 'danger')
+                def emoji = emojiMap.get(status, '❌')
+
+                // ── Human-readable findings count from SARIF ─────────────
+                def findings = '?'
+                try {
+                    findings = sh(
+                        script: "grep -c '\"ruleId\"' reports/gitleaks-report.sarif 2>/dev/null || echo 0",
+                        returnStdout: true
+                    ).trim()
+                } catch (ignored) { }
+
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
 ${emoji} *${status}* - Credential Scan | OT-Microservices
-*Job*    : ${env.JOB_NAME}
-*Branch* : ${branch}
-*Build*  : #${env.BUILD_NUMBER}
-*URL*    : ${env.BUILD_URL}""".stripIndent()
+*Job*      : ${env.JOB_NAME}
+*Branch*   : ${branch}
+*Build*    : #${env.BUILD_NUMBER}
+*Findings* : ${findings} secret(s) detected
+*URL*      : ${env.BUILD_URL}""".stripIndent()
                 )
                 cleanWs()
             }
