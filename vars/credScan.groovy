@@ -1,12 +1,3 @@
-/**
- * vars/credScan.groovy
- * Jenkins Shared Library — Credential Scanning (Gitleaks)
- * Part of: employee-shared-lib1
- *
- * Called from a declarative Jenkinsfile:
- *   credScan(commonConfig)
- */
-
 def call(Map config) {
     node {
         def repoUrl          = config.repoUrl
@@ -95,8 +86,7 @@ def call(Map config) {
                             id     : 'gitleaks'
                         )
                     ],
-                    // No qualityGates block — findings are reported only,
-                    // they never change the build result to UNSTABLE or FAILURE
+
                     name                : 'Gitleaks Credential Scan',
                     skipPublishingChecks: true
                 )
@@ -106,7 +96,7 @@ def call(Map config) {
                 archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
             }
 
-            // Force SUCCESS regardless of how many secrets were found
+
             currentBuild.result = 'SUCCESS'
 
         } catch (err) {
@@ -118,7 +108,7 @@ def call(Map config) {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
 
-                // ── Colour & emoji map covering all three states ──────────
+
                 def colorMap = [
                     'SUCCESS' : 'good',
                     'UNSTABLE': 'warning',
@@ -133,7 +123,7 @@ def call(Map config) {
                 def color = colorMap.get(status, 'danger')
                 def emoji = emojiMap.get(status, '❌')
 
-                // ── Human-readable findings count from SARIF ─────────────
+
                 def findings = '?'
                 try {
                     findings = sh(
@@ -146,7 +136,6 @@ def call(Map config) {
                     channel: slackChannel,
                     color  : color,
                     message: """\
-${emoji} *${status}* - Credential Scan | OT-Microservices
 *Job*      : ${env.JOB_NAME}
 *Branch*   : ${branch}
 *Build*    : #${env.BUILD_NUMBER}
