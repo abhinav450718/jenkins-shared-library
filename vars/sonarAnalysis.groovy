@@ -68,10 +68,8 @@ def call(Map config) {
 
             stage('Verify SonarQube Reachable') {
                 sh """
-                    echo "==> Checking SonarQube connectivity..."
                     curl -sf http://192.168.8.17:9000/api/system/status | grep -q UP \
                         && echo "SonarQube is UP" \
-                        || (echo "ERROR: SonarQube is UNREACHABLE" && exit 1)
                 """
             }
 
@@ -82,16 +80,12 @@ def call(Map config) {
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    echo "==> Go version:"
                     go version
 
-                    echo "==> Current directory:"
                     pwd
 
-                    echo "==> Package list:"
                     go list ./...
 
-                    echo "==> Running go test with coverage..."
                     go test -v \
                         -covermode=atomic \
                         -coverprofile="${REPORT_DIR}/coverage.out" \
@@ -102,13 +96,10 @@ def call(Map config) {
                         ./routes/... \
                         2>&1 | tee "${REPORT_DIR}/test.log" || true
 
-                    echo "==> Lines in coverage.out:"
                     wc -l "${REPORT_DIR}/coverage.out"
 
-                    echo "==> First 10 lines of coverage.out:"
                     head -10 "${REPORT_DIR}/coverage.out"
 
-                    echo "==> Coverage summary:"
                     go tool cover -func="${REPORT_DIR}/coverage.out" || true
                 """
             }
@@ -119,10 +110,8 @@ def call(Map config) {
                         set -e
                         export PATH=${SONAR_DIR}/bin:\$PATH
 
-                        echo "==> Coverage file being sent to Sonar:"
                         cat "${REPORT_DIR}/coverage.out"
 
-                        echo "==> Running SonarQube Analysis..."
                         sonar-scanner \
                             -Dsonar.projectKey=${sonarProjectKey} \
                             -Dsonar.projectName="${sonarProjectName}" \
@@ -135,7 +124,6 @@ def call(Map config) {
                             -Dsonar.sourceEncoding=UTF-8 \
                             2>&1 | tee "${REPORT_DIR}/sonar.log"
 
-                        echo "==> SonarQube Analysis complete"
                     """
                 }
             }
