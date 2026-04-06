@@ -46,10 +46,8 @@ def call(Map config = [:]) {
                 pip install pytest pytest-cov --quiet
 
                 TEST_COUNT=\$(pytest . --collect-only -q --ignore=${VENV_DIR} 2>/dev/null | grep -c "::" || true)
-                echo "==> Found \${TEST_COUNT} test(s)"
 
                 if [ "\${TEST_COUNT}" -gt 0 ]; then
-                    echo "==> Running tests with coverage..."
                     pytest . \
                         --ignore=${VENV_DIR} \
                         --cov=. \
@@ -59,7 +57,6 @@ def call(Map config = [:]) {
                         --junitxml=${REPORT_DIR}/test-results.xml \
                         -v 2>&1 | tee ${REPORT_DIR}/test.log || true
                 else
-                    echo "WARNING: No test files found. Skipping coverage enforcement."
                     pytest . \
                         --ignore=${VENV_DIR} \
                         --junitxml=${REPORT_DIR}/test-results.xml \
@@ -97,8 +94,6 @@ XMLEOF
                 . ${VENV_DIR}/bin/activate
 
                 pip install pylint --quiet
-
-                echo "==> Running pylint..."
                 python3 -m pylint \$(find . -name "*.py" \
                     ! -path "./${VENV_DIR}/*" \
                     ! -path "./tests/*"        \
@@ -108,8 +103,6 @@ XMLEOF
                     > ${REPORT_DIR}/pylint-report.txt || true
 
                 deactivate
-
-                echo "--- pylint report preview (first 50 lines) ---"
                 head -50 ${REPORT_DIR}/pylint-report.txt || true
 
                 echo "==> Issue summary:"
@@ -166,7 +159,6 @@ XMLEOF
             sh """
                 set -e
                 if ! command -v trivy > /dev/null 2>&1; then
-                    echo "==> Installing Trivy..."
                     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
                         | sh -s -- -b /usr/local/bin
                 fi
@@ -174,8 +166,6 @@ XMLEOF
 
                 TRIVY_CACHE="/var/lib/jenkins/tools/trivy-cache"
                 mkdir -p "\${TRIVY_CACHE}"
-
-                echo "==> Disk space available:"
                 df -h .
 
                 trivy fs . \
