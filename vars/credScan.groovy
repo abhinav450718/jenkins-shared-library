@@ -49,11 +49,9 @@ def call(Map config) {
             stage('Credential Scanning') {
                 sh """
                     set -e
-                    echo "==> Starting credential scan..."
                     echo "==> Repo   : ${repoUrl}"
                     echo "==> Branch : ${branch}"
 
-                    # Run 1 — SARIF for Warnings NG plugin display
                     ${GITLEAKS_BIN} detect \\
                         --source=. \\
                         --report-format=sarif \\
@@ -62,7 +60,6 @@ def call(Map config) {
                         --no-git \\
                         2>&1 || true
 
-                    # Run 2 — CSV for human readable artifact download
                     ${GITLEAKS_BIN} detect \\
                         --source=. \\
                         --report-format=csv \\
@@ -71,9 +68,7 @@ def call(Map config) {
                         --no-git \\
                         2>&1 | tee "${REPORT_DIR}/gitleaks.log" || true
 
-                    echo "==> Scan complete"
                     TOTAL=\$(grep -c '"ruleId"' "${REPORT_DIR}/gitleaks-report.sarif" || echo 0)
-                    echo "==> Total findings: \${TOTAL}"
                 """
             }
 
@@ -107,22 +102,6 @@ def call(Map config) {
         } finally {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
-
-
-                def colorMap = [
-                    'SUCCESS' : 'good',
-                    'UNSTABLE': 'warning',
-                    'FAILURE' : 'danger'
-                ]
-                def emojiMap = [
-                    'SUCCESS' : '✅',
-                    'UNSTABLE': '⚠️',
-                    'FAILURE' : '❌'
-                ]
-
-                def color = colorMap.get(status, 'danger')
-                def emoji = emojiMap.get(status, '❌')
-
 
                 def findings = '?'
                 try {
