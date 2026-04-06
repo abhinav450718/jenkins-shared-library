@@ -48,10 +48,7 @@ def call(Map config) {
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
-
-                    echo "==> Downloading Go module dependencies..."
                     go mod download
-                    echo "==> go mod verify..."
                     go mod verify
                 """
             }
@@ -65,17 +62,8 @@ def call(Map config) {
 
                     mkdir -p ${BINARY_DIR}
 
-                    echo "========== COMPILATION =========="
-                    echo "Packages being compiled:"
                     go list ./...
-                    echo "================================="
-
-                    # Build the final binary from main.go (root package)
-                    # -v  : verbose — prints each package name as it is compiled
-                    # -o  : output binary path
                     go build -v -o ${BINARY} .
-
-                    echo "==> Build complete. Binary info:"
                     ls -lh ${BINARY}
                     file  ${BINARY}
                 """
@@ -89,24 +77,14 @@ def call(Map config) {
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
                     MANIFEST="${BINARY_DIR}/build-manifest.txt"
-
-                    echo "===== Employee API — Build Manifest =====" >  \$MANIFEST
                     echo "Build Date   : \$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> \$MANIFEST
                     echo "Branch       : ${branch}"                            >> \$MANIFEST
                     echo "Go Version   : \$(go version)"                       >> \$MANIFEST
                     echo "Module       : \$(go list -m)"                       >> \$MANIFEST
-                    echo ""                                                    >> \$MANIFEST
-                    echo "--- Compiled Packages ---"                          >> \$MANIFEST
                     go list -v ./... >> \$MANIFEST
-                    echo ""                                                    >> \$MANIFEST
-                    echo "--- Binary Details ---"                              >> \$MANIFEST
                     ls -lh ${BINARY} >> \$MANIFEST
                     file  ${BINARY} >> \$MANIFEST
-                    echo ""                                                    >> \$MANIFEST
-                    echo "--- Module Dependencies ---"                         >> \$MANIFEST
                     go list -m all  >> \$MANIFEST
-
-                    echo "==> Manifest written to \$MANIFEST"
                     cat \$MANIFEST
                 """
             }
@@ -125,13 +103,10 @@ def call(Map config) {
         } finally {
             stage('Notify') {
                 def status = currentBuild.result ?: 'FAILURE'
-                def color  = (status == 'SUCCESS') ? 'good'   : 'danger'
-                def emoji  = (status == 'SUCCESS') ? '✅'     : '❌'
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: """\
-${emoji} *${status}* — Go Build | Employee API
 *Job*    : ${env.JOB_NAME}
 *Branch* : ${branch}
 *Build*  : #${env.BUILD_NUMBER}
