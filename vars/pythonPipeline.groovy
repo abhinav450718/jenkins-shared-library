@@ -178,7 +178,6 @@ XMLEOF
                 echo "==> Disk space available:"
                 df -h .
 
-                echo "==> Running Trivy JSON scan..."
                 trivy fs . \
                     --cache-dir "\${TRIVY_CACHE}" \
                     --format json \
@@ -187,7 +186,6 @@ XMLEOF
                     --exit-code 0 \
                     --quiet
 
-                echo "==> Running Trivy table scan..."
                 trivy fs . \
                     --cache-dir "\${TRIVY_CACHE}" \
                     --skip-db-update \
