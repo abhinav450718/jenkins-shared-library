@@ -52,7 +52,6 @@ def call(Map config) {
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    echo "========== TEST =========="
 
                     go test -v \
                         -covermode=atomic \
@@ -60,7 +59,6 @@ def call(Map config) {
                         \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
                         2>&1 | tee "${REPORT_DIR}/test.log" || true
 
-                    echo "=========================="
 
                     if [ -s "${REPORT_DIR}/coverage.out" ]; then
                         echo "==> Coverage Summary:"
