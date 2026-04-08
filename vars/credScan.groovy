@@ -29,14 +29,11 @@ def call(Map config) {
                 sh """
                     set -e
                     if [ ! -f "${GITLEAKS_BIN}" ]; then
-                        echo "==> Installing Gitleaks ${GITLEAKS_VERSION}..."
                         mkdir -p ${GITLEAKS_DIR}
                         curl -sLO https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
                         tar -xzf gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz -C ${GITLEAKS_DIR}
                         rm -f gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
                         chmod +x ${GITLEAKS_BIN}
-                    else
-                        echo "==> Gitleaks ${GITLEAKS_VERSION} already installed, skipping"
                     fi
                     ${GITLEAKS_BIN} version
                 """
@@ -49,9 +46,6 @@ def call(Map config) {
             stage('Credential Scanning') {
                 sh """
                     set -e
-                    echo "==> Repo   : ${repoUrl}"
-                    echo "==> Branch : ${branch}"
-
                     ${GITLEAKS_BIN} detect \\
                         --source=. \\
                         --report-format=sarif \\
@@ -67,8 +61,6 @@ def call(Map config) {
                         --redact \\
                         --no-git \\
                         2>&1 | tee "${REPORT_DIR}/gitleaks.log" || true
-
-                    TOTAL=\$(grep -c '"ruleId"' "${REPORT_DIR}/gitleaks-report.sarif" || echo 0)
                 """
             }
 
@@ -81,7 +73,6 @@ def call(Map config) {
                             id     : 'gitleaks'
                         )
                     ],
-
                     name                : 'Gitleaks Credential Scan',
                     skipPublishingChecks: true
                 )
@@ -91,35 +82,49 @@ def call(Map config) {
                 archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
             }
 
-
             currentBuild.result = 'SUCCESS'
 
         } catch (err) {
             currentBuild.result = 'FAILURE'
-            echo "Pipeline error: ${err}"
             throw err
 
         } finally {
             stage('Post Actions') {
                 def status = currentBuild.result ?: 'FAILURE'
 
-                def findings = '?'
+                def colorMap = [
+                    'SUCCESS' : 'good',
+                    'UNSTABLE': 'warning',
+                    'FAILURE' : 'danger'
+                ]
+
+                def color = colorMap.get(status, 'danger')
+
+                def findings = '0'
                 try {
                     findings = sh(
-                        script: "grep -c '\"ruleId\"' reports/gitleaks-report.sarif 2>/dev/null || echo 0",
+                        script: "grep -c '\"ruleId\"' ${REPORT_DIR}/gitleaks-report.sarif 2>/dev/null || echo 0",
                         returnStdout: true
                     ).trim()
                 } catch (ignored) { }
 
+                def sarifReport = "${env.BUILD_URL}artifact/${REPORT_DIR}/gitleaks-report.sarif"
+                def csvReport   = "${env.BUILD_URL}artifact/${REPORT_DIR}/gitleaks-report.csv"
+
                 slackSend(
                     channel: slackChannel,
                     color  : color,
-                    message: """\
-*Job*      : ${env.JOB_NAME}
-*Branch*   : ${branch}
-*Build*    : #${env.BUILD_NUMBER}
-*Findings* : ${findings} secret(s) detected
-*URL*      : ${env.BUILD_URL}""".stripIndent()
+                    message: "*${status}* - Gitleaks Credential Scan\n" +
+                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                             "*Job Name:*       " + env.JOB_NAME + "\n" +
+                             "*Build Number:*   #" + env.BUILD_NUMBER + "\n" +
+                             "*Branch:*         " + branch + "\n" +
+                             "*Findings:*       " + findings + " secret(s) detected\n" +
+                             "*Status:*         " + status + "\n" +
+                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
+                             "<" + env.BUILD_URL + "|View Build>   |   " +
+                             "<" + sarifReport + "|SARIF Report>   |   " +
+                             "<" + csvReport + "|CSV Report>"
                 )
                 cleanWs()
             }
