@@ -4,6 +4,7 @@ def call(Map config) {
         def branch           = config.branch           ?: 'master'
         def gitCredentialsId = config.gitCredentialsId ?: ''
         def slackChannel     = config.slackChannel     ?: '#ci-operation-notifications'
+        def email            = config.email            ?: ''
         def GITLEAKS_VERSION = config.gitleaksVersion  ?: '8.18.2'
         def REPORT_DIR       = 'reports'
 
@@ -111,21 +112,46 @@ def call(Map config) {
                 def sarifReport = "${env.BUILD_URL}artifact/${REPORT_DIR}/gitleaks-report.sarif"
                 def csvReport   = "${env.BUILD_URL}artifact/${REPORT_DIR}/gitleaks-report.csv"
 
+                // Slack Notification
                 slackSend(
                     channel: slackChannel,
                     color  : color,
                     message: "*${status}* - Gitleaks Credential Scan\n" +
                              "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                             "*Job Name:*       " + env.JOB_NAME + "\n" +
-                             "*Build Number:*   #" + env.BUILD_NUMBER + "\n" +
-                             "*Branch:*         " + branch + "\n" +
-                             "*Findings:*       " + findings + " secret(s) detected\n" +
-                             "*Status:*         " + status + "\n" +
+                             "*Job Name:*       ${env.JOB_NAME}\n" +
+                             "*Build Number:*   #${env.BUILD_NUMBER}\n" +
+                             "*Branch:*         ${branch}\n" +
+                             "*Findings:*       ${findings} secret(s) detected\n" +
+                             "*Status:*         ${status}\n" +
                              "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                             "<" + env.BUILD_URL + "|View Build>   |   " +
-                             "<" + sarifReport + "|SARIF Report>   |   " +
-                             "<" + csvReport + "|CSV Report>"
+                             "<${env.BUILD_URL}|View Build>   |   " +
+                             "<${sarifReport}|SARIF Report>   |   " +
+                             "<${csvReport}|CSV Report>"
                 )
+
+                // Email Notification
+                if (email) {
+                    emailext(
+                        to: email,
+                        subject: "${status}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                        <h3>${status} - Gitleaks Credential Scan</h3>
+                        <p><b>Job Name:</b> ${env.JOB_NAME}</p>
+                        <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
+                        <p><b>Branch:</b> ${branch}</p>
+                        <p><b>Findings:</b> ${findings} secret(s)</p>
+                        <p><b>Status:</b> ${status}</p>
+                        <p>
+                            <a href="${env.BUILD_URL}">View Build</a> |
+                            <a href="${sarifReport}">SARIF Report</a> |
+                            <a href="${csvReport}">CSV Report</a>
+                        </p>
+                        """,
+                        mimeType: 'text/html',
+                        attachmentsPattern: "${REPORT_DIR}/**"
+                    )
+                }
+
                 cleanWs()
             }
         }
