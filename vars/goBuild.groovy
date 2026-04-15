@@ -113,7 +113,7 @@ def call(Map config) {
                      "<${env.BUILD_URL}|View Build> | <${buildLog}|Build Log>"
         )
 
-        // Email Notification (FIXED)
+        // Email Notification (FINAL FIX)
         if (email?.trim()) {
             emailext(
                 to: email,
@@ -130,10 +130,6 @@ def call(Map config) {
                 Manifest: ${manifestReport}
                 """,
                 attachmentsPattern: "${BINARY_DIR}/**",
-                recipientProviders: [
-                    [$class: 'DevelopersRecipientProvider'],
-                    [$class: 'RequesterRecipientProvider']
-                ],
                 replyTo: email
             )
         }
