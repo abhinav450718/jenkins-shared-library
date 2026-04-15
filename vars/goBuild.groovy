@@ -5,7 +5,7 @@ def call(Map config) {
         def gitCredentialsId = config.gitCredentialsId ?: ''
         def GO_VERSION       = config.goVersion        ?: '1.22.5'
         def slackChannel     = config.slackChannel     ?: '#ci-operation-notifications'
-        def email            = config.email            ?: ''
+        def email            = config.email ?: ''
 
         def TOOLS_DIR  = '/var/lib/jenkins/tools'
         def GO_DIR     = "${TOOLS_DIR}/go-${GO_VERSION}"
@@ -42,7 +42,6 @@ def call(Map config) {
 
             stage('Download Dependencies') {
                 sh """
-                    set -e
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
@@ -54,7 +53,6 @@ def call(Map config) {
 
             stage('Code Compilation') {
                 sh """
-                    set -e
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
@@ -64,13 +62,12 @@ def call(Map config) {
                     go build -v -o ${BINARY} . 2>&1 | tee ${BINARY_DIR}/build-output.log
 
                     ls -lh ${BINARY}
-                    file  ${BINARY}
+                    file ${BINARY}
                 """
             }
 
             stage('Generate Build Manifest') {
                 sh """
-                    set -e
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
@@ -83,13 +80,13 @@ def call(Map config) {
                     echo "Module       : \$(go list -m)" >> \$MANIFEST
                     go list -v ./... >> \$MANIFEST
                     ls -lh ${BINARY} >> \$MANIFEST
-                    file  ${BINARY} >> \$MANIFEST
-                    go list -m all  >> \$MANIFEST
+                    file ${BINARY} >> \$MANIFEST
+                    go list -m all >> \$MANIFEST
                 """
             }
 
             stage('Archive Artifacts') {
-                archiveArtifacts artifacts: "${BINARY_DIR}/build-output.log, ${BINARY_DIR}/build-manifest.txt, ${BINARY_DIR}/employee-api", fingerprint: true
+                archiveArtifacts artifacts: "${BINARY_DIR}/**", fingerprint: true
             }
 
             currentBuild.result = 'SUCCESS'
@@ -100,79 +97,41 @@ def call(Map config) {
 
         } finally {
             stage('Post Actions') {
-                def status         = currentBuild.result ?: 'FAILURE'
-                def buildLog       = "${env.BUILD_URL}artifact/${BINARY_DIR}/build-output.log"
+                def status = currentBuild.result ?: 'FAILURE'
+                def buildLog = "${env.BUILD_URL}artifact/${BINARY_DIR}/build-output.log"
                 def manifestReport = "${env.BUILD_URL}artifact/${BINARY_DIR}/build-manifest.txt"
 
-                if (status == 'FAILURE') {
+                // Slack (unchanged)
+                slackSend(
+                    channel: slackChannel,
+                    color: (status == 'SUCCESS') ? 'good' : 'danger',
+                    message: "*${status}* - Employee API Build\n" +
+                             "*Job Name:* ${env.JOB_NAME}\n" +
+                             "*Build Number:* #${env.BUILD_NUMBER}\n" +
+                             "*Branch:* ${branch}\n" +
+                             "*Status:* ${status}\n" +
+                             "<${env.BUILD_URL}|View Build> | <${buildLog}|Build Log>"
+                )
 
-                    slackSend(
-                        channel: slackChannel,
-                        color: 'danger',
-                        message: "*FAILED* - Employee API Build\n" +
-                                 "*Job Name:*       ${env.JOB_NAME}\n" +
-                                 "*Build Number:*   #${env.BUILD_NUMBER}\n" +
-                                 "*Branch:*         ${branch}\n" +
-                                 "*Status:*         Build Failed\n" +
-                                 "<${env.BUILD_URL}|View Build>   |   " +
-                                 "<${buildLog}|Build Log>"
+                // Email (fixed)
+                if (email?.trim()) {
+                    emailext(
+                        to: email,
+                        subject: "${status}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                        body: """
+                        Build Status: ${status}
+
+                        Job: ${env.JOB_NAME}
+                        Build: #${env.BUILD_NUMBER}
+                        Branch: ${branch}
+
+                        View Build: ${env.BUILD_URL}
+                        Build Log: ${buildLog}
+                        Manifest: ${manifestReport}
+                        """,
+                        attachmentsPattern: "${BINARY_DIR}/**",
+                        recipientProviders: [[$class: 'DevelopersRecipientProvider']]
                     )
-
-                    if (email) {
-                        emailext(
-                            to: email,
-                            subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                            body: """
-                            <h3>FAILED - Employee API Build</h3>
-                            <p><b>Job Name:</b> ${env.JOB_NAME}</p>
-                            <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
-                            <p><b>Branch:</b> ${branch}</p>
-                            <p><b>Status:</b> Build Failed</p>
-                            <p>
-                                <a href="${env.BUILD_URL}">View Build</a> |
-                                <a href="${buildLog}">Build Log</a>
-                            </p>
-                            """,
-                            mimeType: 'text/html',
-                            attachmentsPattern: "${BINARY_DIR}/**"
-                        )
-                    }
-
-                } else {
-
-                    slackSend(
-                        channel: slackChannel,
-                        color: 'good',
-                        message: "*SUCCESS* - Employee API Build\n" +
-                                 "*Job Name:*       ${env.JOB_NAME}\n" +
-                                 "*Build Number:*   #${env.BUILD_NUMBER}\n" +
-                                 "*Branch:*         ${branch}\n" +
-                                 "*Status:*         Build Passed\n" +
-                                 "<${env.BUILD_URL}|View Build>   |   " +
-                                 "<${buildLog}|Build Log>   |   " +
-                                 "<${manifestReport}|Build Manifest>"
-                    )
-
-                    if (email) {
-                        emailext(
-                            to: email,
-                            subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                            body: """
-                            <h3>SUCCESS - Employee API Build</h3>
-                            <p><b>Job Name:</b> ${env.JOB_NAME}</p>
-                            <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
-                            <p><b>Branch:</b> ${branch}</p>
-                            <p><b>Status:</b> Build Passed</p>
-                            <p>
-                                <a href="${env.BUILD_URL}">View Build</a> |
-                                <a href="${buildLog}">Build Log</a> |
-                                <a href="${manifestReport}">Build Manifest</a>
-                            </p>
-                            """,
-                            mimeType: 'text/html',
-                            attachmentsPattern: "${BINARY_DIR}/**"
-                        )
-                    }
                 }
 
                 cleanWs()
