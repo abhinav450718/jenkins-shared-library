@@ -101,7 +101,7 @@ def call(Map config) {
         def buildLog       = "${env.BUILD_URL}artifact/${BINARY_DIR}/build-output.log"
         def manifestReport = "${env.BUILD_URL}artifact/${BINARY_DIR}/build-manifest.txt"
 
-        // Slack
+        // Slack Notification
         slackSend(
             channel: slackChannel,
             color: (status == 'SUCCESS') ? 'good' : 'danger',
@@ -113,7 +113,7 @@ def call(Map config) {
                      "<${env.BUILD_URL}|View Build> | <${buildLog}|Build Log>"
         )
 
-        // Email (FIXED)
+        // Email Notification (FIXED)
         if (email?.trim()) {
             emailext(
                 to: email,
@@ -129,7 +129,12 @@ def call(Map config) {
                 Build Log: ${buildLog}
                 Manifest: ${manifestReport}
                 """,
-                attachmentsPattern: "${BINARY_DIR}/**"
+                attachmentsPattern: "${BINARY_DIR}/**",
+                recipientProviders: [
+                    [$class: 'DevelopersRecipientProvider'],
+                    [$class: 'RequesterRecipientProvider']
+                ],
+                replyTo: email
             )
         }
 
