@@ -5,6 +5,7 @@ def call(Map config) {
         def gitCredentialsId = config.gitCredentialsId ?: ''
         def GO_VERSION       = config.goVersion        ?: '1.22.5'
         def slackChannel     = config.slackChannel     ?: '#ci-operation-notifications'
+        def email            = config.email            ?: ''
         def REPORT_DIR       = 'reports'
         def TOOLS_DIR        = '/var/lib/jenkins/tools'
         def GO_DIR           = "${TOOLS_DIR}/go-${GO_VERSION}"
@@ -81,36 +82,82 @@ def call(Map config) {
                 def coverageOut     = "${env.BUILD_URL}artifact/${REPORT_DIR}/coverage.out"
 
                 if (status == 'FAILURE') {
+
                     slackSend(
                         channel: slackChannel,
                         color: 'danger',
                         message: "*FAILED* - Go Test & Coverage\n" +
                                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                                 "*Job Name:*       " + env.JOB_NAME + "\n" +
-                                 "*Build Number:*   #" + env.BUILD_NUMBER + "\n" +
-                                 "*Branch:*         " + branch + "\n" +
+                                 "*Job Name:*       ${env.JOB_NAME}\n" +
+                                 "*Build Number:*   #${env.BUILD_NUMBER}\n" +
+                                 "*Branch:*         ${branch}\n" +
                                  "*Status:*         Build Failed\n" +
                                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                                 "<" + env.BUILD_URL + "|View Build>   |   " +
-                                 "<" + testLog + "|Test Log>"
+                                 "<${env.BUILD_URL}|View Build>   |   " +
+                                 "<${testLog}|Test Log>"
                     )
+
+                    if (email) {
+                        emailext(
+                            to: email,
+                            subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            body: """
+                            <h3>FAILED - Go Test & Coverage</h3>
+                            <p><b>Job Name:</b> ${env.JOB_NAME}</p>
+                            <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
+                            <p><b>Branch:</b> ${branch}</p>
+                            <p><b>Status:</b> Build Failed</p>
+                            <p>
+                                <a href="${env.BUILD_URL}">View Build</a> |
+                                <a href="${testLog}">Test Log</a>
+                            </p>
+                            """,
+                            mimeType: 'text/html',
+                            attachmentsPattern: "${REPORT_DIR}/**"
+                        )
+                    }
+
                 } else {
+
                     slackSend(
                         channel: slackChannel,
                         color: 'good',
                         message: "*SUCCESS* - Go Test & Coverage\n" +
                                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                                 "*Job Name:*       " + env.JOB_NAME + "\n" +
-                                 "*Build Number:*   #" + env.BUILD_NUMBER + "\n" +
-                                 "*Branch:*         " + branch + "\n" +
+                                 "*Job Name:*       ${env.JOB_NAME}\n" +
+                                 "*Build Number:*   #${env.BUILD_NUMBER}\n" +
+                                 "*Branch:*         ${branch}\n" +
                                  "*Status:*         Build Passed\n" +
                                  "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                                 "<" + env.BUILD_URL + "|View Build>   |   " +
-                                 "<" + testLog + "|Test Log>   |   " +
-                                 "<" + coverageSummary + "|Coverage Summary>   |   " +
-                                 "<" + coverageOut + "|Coverage Report>"
+                                 "<${env.BUILD_URL}|View Build>   |   " +
+                                 "<${testLog}|Test Log>   |   " +
+                                 "<${coverageSummary}|Coverage Summary>   |   " +
+                                 "<${coverageOut}|Coverage Report>"
                     )
+
+                    if (email) {
+                        emailext(
+                            to: email,
+                            subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                            body: """
+                            <h3>SUCCESS - Go Test & Coverage</h3>
+                            <p><b>Job Name:</b> ${env.JOB_NAME}</p>
+                            <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
+                            <p><b>Branch:</b> ${branch}</p>
+                            <p><b>Status:</b> Build Passed</p>
+                            <p>
+                                <a href="${env.BUILD_URL}">View Build</a> |
+                                <a href="${testLog}">Test Log</a> |
+                                <a href="${coverageSummary}">Coverage Summary</a> |
+                                <a href="${coverageOut}">Coverage Report</a>
+                            </p>
+                            """,
+                            mimeType: 'text/html',
+                            attachmentsPattern: "${REPORT_DIR}/**"
+                        )
+                    }
                 }
+
                 cleanWs()
             }
         }
