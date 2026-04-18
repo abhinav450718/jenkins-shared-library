@@ -52,16 +52,11 @@ def call(Map config) {
                         mv ${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}-linux ${SONAR_DIR}
                         rm -f sonar-scanner-cli-${SONAR_VERSION}-linux.zip
                     fi
-                    ${SONAR_DIR}/bin/sonar-scanner --version
                 """
             }
 
             stage('Prepare Reports') {
                 commonUtils.createDir(REPORT_DIR)
-            }
-
-            stage('Verify SonarQube') {
-                sh "curl -sf http://192.168.8.17:9000/api/system/status | grep -q UP"
             }
 
             stage('Generate Coverage') {
@@ -91,7 +86,6 @@ def call(Map config) {
                             -Dsonar.projectName="${sonarName}" \
                             -Dsonar.sources=. \
                             -Dsonar.go.coverage.reportPaths=${REPORT_DIR}/coverage.out \
-                            -Dsonar.exclusions=**/vendor/**,**/reports/** \
                             2>&1 | tee ${REPORT_DIR}/sonar.log
                     """
                 }
@@ -111,7 +105,7 @@ def call(Map config) {
 
             def status = currentBuild.result ?: 'FAILURE'
 
-            commonUtils.notify(
+            commonUtils.notifyBuild(
                 status: status,
                 toolName: "Go SonarQube Analysis",
                 branch: branch,
