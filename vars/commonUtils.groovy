@@ -33,7 +33,7 @@ def sendSlack(channel, message, status = "SUCCESS") {
     )
 }
 
-def sendEmail(email, subject, body, attachmentPath = '') {
+def sendEmail(email, subject, body, attachments = '') {
 
     if (!email) return
 
@@ -42,31 +42,6 @@ def sendEmail(email, subject, body, attachmentPath = '') {
         subject: subject,
         body: body,
         mimeType: 'text/html',
-        attachmentsPattern: attachmentPath ?: ''
+        attachmentsPattern: attachments
     )
-}
-
-def getSarifFindings(reportPath) {
-    try {
-        return sh(
-            script: "grep -c '\"ruleId\"' ${reportPath} 2>/dev/null || echo 0",
-            returnStdout: true
-        ).trim()
-    } catch (e) {
-        return "0"
-    }
-}
-
-def buildStatusMessage(toolName, status, extraInfo = '') {
-
-    return """
-*${status}* - ${toolName}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Job: ${env.JOB_NAME}
-Build: #${env.BUILD_NUMBER}
-Status: ${status}
-${extraInfo}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${env.BUILD_URL}
-"""
 }
