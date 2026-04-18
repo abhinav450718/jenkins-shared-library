@@ -19,7 +19,7 @@ def call(Map config) {
                 commonUtils.cleanWorkspace()
             }
 
-            stage('Checkout Code') {
+            stage('Checkout') {
                 commonUtils.checkoutCode(repoUrl, branch, credId)
             }
 
@@ -32,36 +32,26 @@ def call(Map config) {
                         mv go ${GO_DIR}
                         rm -f go${GO_VERSION}.linux-amd64.tar.gz
                     fi
-                    ${GO_DIR}/bin/go version
                 """
             }
 
-            stage('Prepare Reports') {
+            stage('Test') {
                 commonUtils.createDir(REPORT_DIR)
-            }
 
-            stage('Run Tests') {
                 sh """
                     export GOROOT=${GO_DIR}
                     export GOPATH=\$HOME/go
                     export PATH=\$GOROOT/bin:\$GOPATH/bin:\$PATH
 
-                    go test -v \
-                        -covermode=atomic \
-                        -coverprofile=${REPORT_DIR}/coverage.out \
-                        \$(go list ./... | grep -v docs | grep -v model | grep -v migration) \
+                    go test -coverprofile=${REPORT_DIR}/coverage.out ./... \
                         2>&1 | tee ${REPORT_DIR}/test.log || true
 
-                    if [ -s "${REPORT_DIR}/coverage.out" ]; then
-                        go tool cover -func=${REPORT_DIR}/coverage.out \
-                            | tee ${REPORT_DIR}/coverage_summary.txt
-                    else
-                        echo "mode: atomic" > ${REPORT_DIR}/coverage.out
-                    fi
+                    go tool cover -func=${REPORT_DIR}/coverage.out \
+                        | tee ${REPORT_DIR}/coverage_summary.txt || true
                 """
             }
 
-            stage('Archive Reports') {
+            stage('Archive') {
                 commonUtils.archiveReports(REPORT_DIR)
             }
 
@@ -75,16 +65,25 @@ def call(Map config) {
 
             def status = currentBuild.result ?: 'FAILURE'
 
-            def message = commonUtils.buildStatusMessage(
-                "Go Unit Testing & Coverage",
-                status
-            )
+            def testLog   = "${env.BUILD_URL}artifact/${REPORT_DIR}/test.log"
+            def coverage  = "${env.BUILD_URL}artifact/${REPORT_DIR}/coverage_summary.txt"
+
+            def message = """
+*${status}* - Go Unit Test
+━━━━━━━━━━━━━━━━━━━━━━
+Job: ${env.JOB_NAME}
+Build: #${env.BUILD_NUMBER}
+Branch: ${branch}
+Status: ${status}
+━━━━━━━━━━━━━━━━━━━━━━
+<${env.BUILD_URL}|Build> | <${testLog}|Test Log> | <${coverage}|Coverage>
+"""
 
             commonUtils.sendSlack(slackCh, message, status)
 
             commonUtils.sendEmail(
                 email,
-                "${status}: Go Unit Test",
+                "${status}: Go Test",
                 message,
                 "${REPORT_DIR}/**"
             )
