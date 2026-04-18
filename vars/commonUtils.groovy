@@ -18,7 +18,7 @@ def archiveReports(path) {
     archiveArtifacts artifacts: "${path}/**", fingerprint: true
 }
 
-def notify(Map config = [:]) {
+def notifyBuild(Map config = [:]) {
 
     def status   = config.status ?: 'SUCCESS'
     def toolName = config.toolName ?: 'Pipeline'
