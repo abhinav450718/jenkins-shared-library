@@ -10,7 +10,15 @@ def checkoutCode(repoUrl, branch, credId = '') {
     }
 }
 
-def sendSlackNotification(channel, status, branch, findings, reportDir) {
+def createDir(path) {
+    sh "mkdir -p ${path}"
+}
+
+def archiveReports(path) {
+    archiveArtifacts artifacts: "${path}/**", fingerprint: true
+}
+
+def sendSlack(channel, message, status = "SUCCESS") {
 
     def colorMap = [
         'SUCCESS' : 'good',
@@ -18,59 +26,47 @@ def sendSlackNotification(channel, status, branch, findings, reportDir) {
         'FAILURE' : 'danger'
     ]
 
-    def color = colorMap.get(status, 'danger')
-
-    def sarifReport = "${env.BUILD_URL}artifact/${reportDir}/gitleaks-report.sarif"
-    def csvReport   = "${env.BUILD_URL}artifact/${reportDir}/gitleaks-report.csv"
-
     slackSend(
         channel: channel,
-        color  : color,
-        message: "*${status}* - Gitleaks Credential Scan\n" +
-                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                 "*Job Name:* ${env.JOB_NAME}\n" +
-                 "*Build:* #${env.BUILD_NUMBER}\n" +
-                 "*Branch:* ${branch}\n" +
-                 "*Findings:* ${findings}\n" +
-                 "*Status:* ${status}\n" +
-                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                 "<${env.BUILD_URL}|View Build> | <${sarifReport}|SARIF> | <${csvReport}|CSV>"
+        color  : colorMap.get(status, 'danger'),
+        message: message
     )
 }
 
-def sendEmailNotification(email, status, branch, findings, reportDir) {
+def sendEmail(email, subject, body, attachmentPath = '') {
 
     if (!email) return
 
-    def sarifReport = "${env.BUILD_URL}artifact/${reportDir}/gitleaks-report.sarif"
-    def csvReport   = "${env.BUILD_URL}artifact/${reportDir}/gitleaks-report.csv"
-
     emailext(
         to: email,
-        subject: "${status}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-        body: """
-        <h3>${status} - Gitleaks Scan</h3>
-        <p><b>Branch:</b> ${branch}</p>
-        <p><b>Findings:</b> ${findings}</p>
-        <p><b>Status:</b> ${status}</p>
-        <p>
-            <a href="${env.BUILD_URL}">Build</a> |
-            <a href="${sarifReport}">SARIF</a> |
-            <a href="${csvReport}">CSV</a>
-        </p>
-        """,
+        subject: subject,
+        body: body,
         mimeType: 'text/html',
-        attachmentsPattern: "${reportDir}/**"
+        attachmentsPattern: attachmentPath ?: ''
     )
 }
 
-def getFindings(reportDir) {
+def getSarifFindings(reportPath) {
     try {
         return sh(
-            script: "grep -c '\"ruleId\"' ${reportDir}/gitleaks-report.sarif 2>/dev/null || echo 0",
+            script: "grep -c '\"ruleId\"' ${reportPath} 2>/dev/null || echo 0",
             returnStdout: true
         ).trim()
     } catch (e) {
         return "0"
     }
+}
+
+def buildStatusMessage(toolName, status, extraInfo = '') {
+
+    return """
+*${status}* - ${toolName}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Job: ${env.JOB_NAME}
+Build: #${env.BUILD_NUMBER}
+Status: ${status}
+${extraInfo}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${env.BUILD_URL}
+"""
 }
