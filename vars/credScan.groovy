@@ -1,86 +1,61 @@
 def call(Map config) {
-    node {
-        def repoUrl          = config.repoUrl
-        def branch           = config.branch           ?: 'master'
-        def gitCredentialsId = config.gitCredentialsId ?: ''
-        def slackChannel     = config.slackChannel     ?: '#ci-operation-notifications'
-        def email            = config.email            ?: ''
-        def GITLEAKS_VERSION = config.gitleaksVersion  ?: '8.18.2'
-        def REPORT_DIR       = 'reports'
 
-        def TOOLS_DIR    = '/var/lib/jenkins/tools'
-        def GITLEAKS_DIR = "${TOOLS_DIR}/gitleaks-${GITLEAKS_VERSION}"
-        def GITLEAKS_BIN = "${GITLEAKS_DIR}/gitleaks"
+    node {
+
+        def repoUrl    = config.repoUrl
+        def branch     = config.branch ?: 'master'
+        def credId     = config.gitCredentialsId ?: ''
+        def slackCh    = config.slackChannel ?: '#ci-operation-notifications'
+        def email      = config.email ?: ''
+        def version    = config.gitleaksVersion ?: '8.18.2'
+        def REPORT_DIR = "reports"
+
+        def TOOLS_DIR  = "/var/lib/jenkins/tools"
+        def GITLEAKS   = "${TOOLS_DIR}/gitleaks-${version}/gitleaks"
 
         try {
 
             stage('Clean Workspace') {
-                cleanWs()
+                commonUtils.cleanWorkspace()
             }
 
-            stage('Checkout Code') {
-                if (gitCredentialsId) {
-                    git branch: branch, url: repoUrl, credentialsId: gitCredentialsId
-                } else {
-                    git branch: branch, url: repoUrl
-                }
+            stage('Checkout') {
+                commonUtils.checkoutCode(repoUrl, branch, credId)
             }
 
             stage('Setup Gitleaks') {
                 sh """
                     set -e
-                    if [ ! -f "${GITLEAKS_BIN}" ]; then
-                        mkdir -p ${GITLEAKS_DIR}
-                        curl -sLO https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
-                        tar -xzf gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz -C ${GITLEAKS_DIR}
-                        rm -f gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz
-                        chmod +x ${GITLEAKS_BIN}
+                    mkdir -p ${TOOLS_DIR}/gitleaks-${version}
+
+                    if [ ! -f "${GITLEAKS}" ]; then
+                        curl -sLO https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz
+                        tar -xzf gitleaks_${version}_linux_x64.tar.gz -C ${TOOLS_DIR}/gitleaks-${version}
+                        chmod +x ${GITLEAKS}
                     fi
-                    ${GITLEAKS_BIN} version
                 """
             }
 
-            stage('Prepare Reports') {
-                sh "mkdir -p ${REPORT_DIR}"
-            }
+            stage('Credential Scan') {
+                commonUtils.createDir(REPORT_DIR)
 
-            stage('Credential Scanning') {
                 sh """
-                    set -e
-                    ${GITLEAKS_BIN} detect \\
-                        --source=. \\
-                        --report-format=sarif \\
-                        --report-path="${REPORT_DIR}/gitleaks-report.sarif" \\
-                        --redact \\
-                        --no-git \\
-                        2>&1 || true
+                    ${GITLEAKS} detect \
+                        --source=. \
+                        --report-format=sarif \
+                        --report-path=${REPORT_DIR}/gitleaks-report.sarif \
+                        --no-git || true
 
-                    ${GITLEAKS_BIN} detect \\
-                        --source=. \\
-                        --report-format=csv \\
-                        --report-path="${REPORT_DIR}/gitleaks-report.csv" \\
-                        --redact \\
-                        --no-git \\
-                        2>&1 | tee "${REPORT_DIR}/gitleaks.log" || true
+                    ${GITLEAKS} detect \
+                        --source=. \
+                        --report-format=csv \
+                        --report-path=${REPORT_DIR}/gitleaks-report.csv \
+                        --no-git || true
                 """
-            }
-
-            stage('Publish Warnings Report') {
-                recordIssues(
-                    tools: [
-                        sarif(
-                            pattern: "${REPORT_DIR}/gitleaks-report.sarif",
-                            name   : 'Gitleaks',
-                            id     : 'gitleaks'
-                        )
-                    ],
-                    name                : 'Gitleaks Credential Scan',
-                    skipPublishingChecks: true
-                )
             }
 
             stage('Archive Reports') {
-                archiveArtifacts artifacts: "${REPORT_DIR}/**", fingerprint: true
+                commonUtils.archiveReports(REPORT_DIR)
             }
 
             currentBuild.result = 'SUCCESS'
@@ -90,70 +65,23 @@ def call(Map config) {
             throw err
 
         } finally {
-            stage('Post Actions') {
-                def status = currentBuild.result ?: 'FAILURE'
 
-                def colorMap = [
-                    'SUCCESS' : 'good',
-                    'UNSTABLE': 'warning',
-                    'FAILURE' : 'danger'
-                ]
+            def status = currentBuild.result ?: 'FAILURE'
 
-                def color = colorMap.get(status, 'danger')
+            commonUtils.notifyBuild(
+                status: status,
+                toolName: "Gitleaks Credential Scan",
+                branch: branch,
+                slackChannel: slackCh,
+                email: email,
+                reports: [
+                    "SARIF Report" : "${REPORT_DIR}/gitleaks-report.sarif",
+                    "CSV Report"   : "${REPORT_DIR}/gitleaks-report.csv"
+                ],
+                attachments: "${REPORT_DIR}/**"
+            )
 
-                def findings = '0'
-                try {
-                    findings = sh(
-                        script: "grep -c '\"ruleId\"' ${REPORT_DIR}/gitleaks-report.sarif 2>/dev/null || echo 0",
-                        returnStdout: true
-                    ).trim()
-                } catch (ignored) { }
-
-                def sarifReport = "${env.BUILD_URL}artifact/${REPORT_DIR}/gitleaks-report.sarif"
-                def csvReport   = "${env.BUILD_URL}artifact/${REPORT_DIR}/gitleaks-report.csv"
-
-                // Slack Notification
-                slackSend(
-                    channel: slackChannel,
-                    color  : color,
-                    message: "*${status}* - Gitleaks Credential Scan\n" +
-                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                             "*Job Name:*       ${env.JOB_NAME}\n" +
-                             "*Build Number:*   #${env.BUILD_NUMBER}\n" +
-                             "*Branch:*         ${branch}\n" +
-                             "*Findings:*       ${findings} secret(s) detected\n" +
-                             "*Status:*         ${status}\n" +
-                             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                             "<${env.BUILD_URL}|View Build>   |   " +
-                             "<${sarifReport}|SARIF Report>   |   " +
-                             "<${csvReport}|CSV Report>"
-                )
-
-                // Email Notification
-                if (email) {
-                    emailext(
-                        to: email,
-                        subject: "${status}: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                        body: """
-                        <h3>${status} - Gitleaks Credential Scan</h3>
-                        <p><b>Job Name:</b> ${env.JOB_NAME}</p>
-                        <p><b>Build Number:</b> #${env.BUILD_NUMBER}</p>
-                        <p><b>Branch:</b> ${branch}</p>
-                        <p><b>Findings:</b> ${findings} secret(s)</p>
-                        <p><b>Status:</b> ${status}</p>
-                        <p>
-                            <a href="${env.BUILD_URL}">View Build</a> |
-                            <a href="${sarifReport}">SARIF Report</a> |
-                            <a href="${csvReport}">CSV Report</a>
-                        </p>
-                        """,
-                        mimeType: 'text/html',
-                        attachmentsPattern: "${REPORT_DIR}/**"
-                    )
-                }
-
-                cleanWs()
-            }
+            cleanWs()
         }
     }
 }
