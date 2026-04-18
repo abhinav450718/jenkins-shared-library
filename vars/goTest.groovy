@@ -25,6 +25,7 @@ def call(Map config) {
 
             stage('Setup Go') {
                 sh """
+                    set -e
                     if [ ! -f "${GO_DIR}/bin/go" ]; then
                         mkdir -p ${TOOLS_DIR}
                         curl -sLO https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
@@ -65,27 +66,18 @@ def call(Map config) {
 
             def status = currentBuild.result ?: 'FAILURE'
 
-            def testLog   = "${env.BUILD_URL}artifact/${REPORT_DIR}/test.log"
-            def coverage  = "${env.BUILD_URL}artifact/${REPORT_DIR}/coverage_summary.txt"
-
-            def message = """
-*${status}* - Go Unit Test
-━━━━━━━━━━━━━━━━━━━━━━
-Job: ${env.JOB_NAME}
-Build: #${env.BUILD_NUMBER}
-Branch: ${branch}
-Status: ${status}
-━━━━━━━━━━━━━━━━━━━━━━
-<${env.BUILD_URL}|Build> | <${testLog}|Test Log> | <${coverage}|Coverage>
-"""
-
-            commonUtils.sendSlack(slackCh, message, status)
-
-            commonUtils.sendEmail(
-                email,
-                "${status}: Go Test",
-                message,
-                "${REPORT_DIR}/**"
+            commonUtils.notifyBuild(
+                status: status,
+                toolName: "Go Unit Testing",
+                branch: branch,
+                slackChannel: slackCh,
+                email: email,
+                reports: [
+                    "Test Log"         : "${REPORT_DIR}/test.log",
+                    "Coverage Summary" : "${REPORT_DIR}/coverage_summary.txt",
+                    "Coverage Report"  : "${REPORT_DIR}/coverage.out"
+                ],
+                attachments: "${REPORT_DIR}/**"
             )
 
             cleanWs()
