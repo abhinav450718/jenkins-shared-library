@@ -1,17 +1,20 @@
 def call(Map config = [:]) {
     node {
-        def repoUrl           = config.repoUrl           ?: error('repoUrl is required')
-        def branch            = config.branch            ?: 'main'
-        def gitCredentialsId  = config.gitCredentialsId  ?: ''
-        def slackChannel      = config.slackChannel      ?: '#ci-operation-notifications'
+
+        def repoUrl           = config.repoUrl ?: error('repoUrl is required')
+        def branch            = config.branch ?: 'main'
+        def credId            = config.gitCredentialsId ?: ''
+        def slackCh           = config.slackChannel ?: '#ci-operation-notifications'
+        def email             = config.email ?: ''
         def coverageThreshold = config.coverageThreshold ?: '70'
-        def sonarProjectKey   = config.sonarProjectKey   ?: 'notification-worker'
-        def sonarProjectName  = config.sonarProjectName  ?: 'Notification Worker'
-        def sonarServer       = config.sonarServer       ?: 'SonarQube'
-        def trivySeverity     = config.trivySeverity     ?: 'HIGH,CRITICAL'
-        def trivyFailOnVuln   = config.trivyFailOnVuln   ?: false
-        def REPORT_DIR        = 'reports'
-        def VENV_DIR          = '.venv'
+        def sonarProjectKey   = config.sonarProjectKey ?: 'notification-worker'
+        def sonarProjectName  = config.sonarProjectName ?: 'Notification Worker'
+        def sonarServer       = config.sonarServer ?: 'SonarQube'
+        def trivySeverity     = config.trivySeverity ?: 'HIGH,CRITICAL'
+        def trivyFailOnVuln   = config.trivyFailOnVuln ?: false
+
+        def REPORT_DIR = 'reports'
+        def VENV_DIR   = '.venv'
 
         def TOOLS_DIR     = '/var/lib/jenkins/tools'
         def SONAR_VERSION = '6.2.1.4610'
@@ -21,54 +24,30 @@ def call(Map config = [:]) {
         try {
 
             stage('Clean Workspace') {
-                cleanWs()
+                commonUtils.cleanWorkspace()
             }
 
             stage('Checkout Code') {
-                if (gitCredentialsId) {
-                    git branch: branch, url: repoUrl, credentialsId: gitCredentialsId
-                } else {
-                    git branch: branch, url: repoUrl
-                }
-                sh 'git log --oneline -5'
+                commonUtils.checkoutCode(repoUrl, branch, credId)
             }
 
             stage('Unit Test') {
+                commonUtils.createDir(REPORT_DIR)
+
                 sh """
                     set -e
-                    mkdir -p ${REPORT_DIR}
-
                     python3 -m venv ${VENV_DIR}
                     . ${VENV_DIR}/bin/activate
 
-                    pip install --upgrade pip --quiet
-                    pip install -r requirements.txt --quiet
-                    pip install pytest pytest-cov --quiet
+                    pip install -q --upgrade pip
+                    pip install -q -r requirements.txt
+                    pip install -q pytest pytest-cov
 
-                    TEST_COUNT=\$(pytest . --collect-only -q --ignore=${VENV_DIR} 2>/dev/null | grep -c "::" || true)
-
-                    if [ "\${TEST_COUNT}" -gt 0 ]; then
-                        pytest . \\
-                            --ignore=${VENV_DIR} \\
-                            --cov=. \\
-                            --cov-report=xml:${REPORT_DIR}/coverage.xml \\
-                            --cov-report=term-missing \\
-                            --cov-fail-under=${coverageThreshold} \\
-                            --junitxml=${REPORT_DIR}/test-results.xml \\
-                            -v 2>&1 | tee ${REPORT_DIR}/test.log || true
-                    else
-                        pytest . \\
-                            --ignore=${VENV_DIR} \\
-                            --junitxml=${REPORT_DIR}/test-results.xml \\
-                            -v 2>&1 | tee ${REPORT_DIR}/test.log || true
-
-                        cat > ${REPORT_DIR}/coverage.xml << 'XMLEOF'
-<?xml version="1.0" ?>
-<coverage version="7.0" timestamp="0" lines-valid="0" lines-covered="0" line-rate="0" branches-covered="0" branches-valid="0" branch-rate="0" complexity="0">
-    <packages/>
-</coverage>
-XMLEOF
-                    fi
+                    pytest . \
+                        --cov=. \
+                        --cov-report=xml:${REPORT_DIR}/coverage.xml \
+                        --junitxml=${REPORT_DIR}/test-results.xml \
+                        -v 2>&1 | tee ${REPORT_DIR}/test.log || true
 
                     deactivate
                 """
@@ -78,121 +57,56 @@ XMLEOF
 
                 recordCoverage(
                     tools: [[parser: 'COBERTURA', pattern: "${REPORT_DIR}/coverage.xml"]],
-                    id: 'python-coverage',
-                    name: 'Python Coverage',
                     skipPublishingChecks: true,
                     ignoreParsingErrors: true
                 )
-
-                archiveArtifacts artifacts: "${REPORT_DIR}/test-results.xml, ${REPORT_DIR}/test.log, ${REPORT_DIR}/coverage.xml",
-                                 allowEmptyArchive: true
             }
 
             stage('Bug Analysis') {
                 sh """
-                    set -e
                     . ${VENV_DIR}/bin/activate
+                    pip install -q pylint
 
-                    pip install pylint --quiet
-                    python3 -m pylint \$(find . -name "*.py" \\
-                        ! -path "./${VENV_DIR}/*" \\
-                        ! -path "./tests/*"        \\
-                        ! -path "./venv/*") \\
-                        --output-format=parseable \\
-                        --exit-zero \\
+                    pylint \$(find . -name "*.py" ! -path "./${VENV_DIR}/*") \
+                        --output-format=parseable \
+                        --exit-zero \
                         > ${REPORT_DIR}/pylint-report.txt || true
 
                     deactivate
                 """
-
-                archiveArtifacts artifacts: "${REPORT_DIR}/pylint-report.txt",
-                                 allowEmptyArchive: true
             }
 
             stage('Static Code Analysis') {
                 withSonarQubeEnv(sonarServer) {
                     sh """
-                        set -e
-
-                        if [ ! -f "${SONAR_BIN}" ]; then
-                            mkdir -p ${TOOLS_DIR}
-                            curl -fsSL https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_VERSION}-linux-x64.zip \\
-                                -o /tmp/sonar-scanner.zip
-                            unzip -q /tmp/sonar-scanner.zip -d ${TOOLS_DIR}
-                            mv ${TOOLS_DIR}/sonar-scanner-${SONAR_VERSION}-linux-x64 ${SONAR_DIR} 2>/dev/null || true
-                            rm -f /tmp/sonar-scanner.zip
-                        fi
-
-                        ${SONAR_BIN} --version
-
-                        ${SONAR_BIN} \\
-                            -Dsonar.projectKey=${sonarProjectKey} \\
-                            -Dsonar.projectName="${sonarProjectName}" \\
-                            -Dsonar.sources=. \\
-                            -Dsonar.exclusions="**/${VENV_DIR}/**,**/tests/**,**/__pycache__/**,**/venv/**" \\
-                            -Dsonar.language=py \\
-                            -Dsonar.python.pylint.reportPaths=${REPORT_DIR}/pylint-report.txt \\
-                            -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml
+                        ${SONAR_BIN} \
+                        -Dsonar.projectKey=${sonarProjectKey} \
+                        -Dsonar.projectName="${sonarProjectName}" \
+                        -Dsonar.sources=. \
+                        -Dsonar.python.coverage.reportPaths=${REPORT_DIR}/coverage.xml \
+                        -Dsonar.python.pylint.reportPaths=${REPORT_DIR}/pylint-report.txt
                     """
                 }
             }
 
             stage('Dependency Scan') {
                 sh """
-                    set -e
-                    if ! command -v trivy > /dev/null 2>&1; then
-                        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \\
-                            | sh -s -- -b /usr/local/bin
-                    fi
-                    trivy --version
+                    trivy fs . \
+                        --format json \
+                        --output ${REPORT_DIR}/trivy-report.json \
+                        --severity ${trivySeverity} \
+                        --exit-code 0
 
-                    TRIVY_CACHE="/var/lib/jenkins/tools/trivy-cache"
-                    mkdir -p "\${TRIVY_CACHE}"
-
-                    trivy fs . \\
-                        --cache-dir "\${TRIVY_CACHE}" \\
-                        --format json \\
-                        --output ${REPORT_DIR}/trivy-report.json \\
-                        --severity ${trivySeverity} \\
-                        --exit-code 0 \\
-                        --quiet
-
-                    trivy fs . \\
-                        --cache-dir "\${TRIVY_CACHE}" \\
-                        --skip-db-update \\
-                        --format table \\
-                        --severity ${trivySeverity} \\
-                        --exit-code 0 \\
-                        --quiet \\
+                    trivy fs . \
+                        --format table \
+                        --severity ${trivySeverity} \
+                        --exit-code 0 \
                         | tee ${REPORT_DIR}/trivy-summary.txt
                 """
-
-                if (trivyFailOnVuln) {
-                    def exitCode = sh(
-                        script: """
-                            TRIVY_CACHE="/var/lib/jenkins/tools/trivy-cache"
-                            trivy fs . \\
-                                --cache-dir "\${TRIVY_CACHE}" \\
-                                --skip-db-update \\
-                                --severity ${trivySeverity} \\
-                                --exit-code 1 \\
-                                --quiet
-                        """,
-                        returnStatus: true
-                    )
-                    if (exitCode != 0) {
-                        error "Trivy found vulnerabilities with severity ${trivySeverity}. Build FAILED."
-                    }
-                }
-
-                archiveArtifacts artifacts: "${REPORT_DIR}/trivy-report.json, ${REPORT_DIR}/trivy-summary.txt",
-                                 allowEmptyArchive: true
             }
 
             stage('Archive Reports') {
-                archiveArtifacts artifacts: "${REPORT_DIR}/**",
-                                 allowEmptyArchive: true,
-                                 fingerprint: true
+                commonUtils.archiveReports(REPORT_DIR)
             }
 
             currentBuild.result = 'SUCCESS'
@@ -202,45 +116,26 @@ XMLEOF
             throw err
 
         } finally {
-            stage('Post Actions') {
-                def status = currentBuild.result ?: 'FAILURE'
 
-                def colorMap = [
-                    'SUCCESS' : 'good',
-                    'UNSTABLE': 'warning',
-                    'FAILURE' : 'danger'
-                ]
+            def status = currentBuild.result ?: 'FAILURE'
 
-                def color = colorMap.get(status, 'danger')
+            commonUtils.notifyBuild(
+                status: status,
+                toolName: "Python CI Pipeline",
+                branch: branch,
+                slackChannel: slackCh,
+                email: email,
+                reports: [
+                    "Test Results"   : "${REPORT_DIR}/test-results.xml",
+                    "Coverage"       : "${REPORT_DIR}/coverage.xml",
+                    "Pylint Report"  : "${REPORT_DIR}/pylint-report.txt",
+                    "Trivy Summary"  : "${REPORT_DIR}/trivy-summary.txt",
+                    "Trivy Report"   : "${REPORT_DIR}/trivy-report.json"
+                ],
+                attachments: "${REPORT_DIR}/**"
+            )
 
-                def trivyReport    = "${env.BUILD_URL}artifact/${REPORT_DIR}/trivy-report.json"
-                def trivySummary   = "${env.BUILD_URL}artifact/${REPORT_DIR}/trivy-summary.txt"
-                def pylintReport   = "${env.BUILD_URL}artifact/${REPORT_DIR}/pylint-report.txt"
-                def coverageReport = "${env.BUILD_URL}artifact/${REPORT_DIR}/coverage.xml"
-                def testReport     = "${env.BUILD_URL}artifact/${REPORT_DIR}/test-results.xml"
-
-                try {
-                    slackSend(
-                        channel: slackChannel,
-                        color  : color,
-                        message: "*${status}* - Notification Worker CI\n" +
-                                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                                 "*Job Name:*       " + env.JOB_NAME + "\n" +
-                                 "*Build Number:*   #" + env.BUILD_NUMBER + "\n" +
-                                 "*Branch:*         " + branch + "\n" +
-                                 "*Status:*         " + status + "\n" +
-                                 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                                 "<" + env.BUILD_URL + "|View Build>   |   " +
-                                 "<" + testReport + "|Test Results>   |   " +
-                                 "<" + coverageReport + "|Coverage>   |   " +
-                                 "<" + pylintReport + "|Pylint>   |   " +
-                                 "<" + trivySummary + "|Trivy Summary>   |   " +
-                                 "<" + trivyReport + "|Trivy JSON>"
-                    )
-                } catch (slackErr) { }
-
-                cleanWs()
-            }
+            cleanWs()
         }
     }
 }
